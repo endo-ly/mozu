@@ -24,22 +24,36 @@ mozu say --show "文章"               # 読み方（カタカナにした結果
 mozu transcribe memo.m4a             # 音声ファイルを文字に
 mozu listen                          # マイクで聞いて、話し終わったら文字を出力
 mozu voices / devices / health
+mozu doctor                          # 必要なものがそろっているか調べ、足りないものの直し方を示す
 ```
 
 ## 必要なもの
 
 - Windows 10 / 11、Rust（stable）
-- `speech serve` が動いていること（例: `speech serve irodori-tts-mf qwen3-asr-1.7b --host 127.0.0.1 --port 8012`）
+- speech.cpp（`install.ps1` が、なければ入れるか尋ねる。→ [speech.cpp](#speechcpp)）
 - `mozu transcribe` で WAV 以外を使うときは FFmpeg
 
 ## インストール
 
 ```powershell
 copy .env.example .env          # 接続先を変えるときは MOZU_SPEECHCPP_URL を書き換える
-pwsh scripts\install.ps1        # 確認 → ビルド → bin\ に置く（PATH に追加）→ mozu-tray を起動
+pwsh scripts\install.ps1        # 確認 → ビルド → bin\ に置く（PATH に追加）→ mozu-tray を起動 → 診断
 ```
 
 起動したら、トレイのアイコンを右クリックして「ログオン時に起動」にチェックを入れる。更新するときも `install.ps1` を実行し直す。
+
+## speech.cpp
+
+認識と合成は speech.cpp（`speech serve`）がやる。mozu-tray は、次のどちらの形でも使える。
+
+| 形 | 設定 | 内容 |
+|---|---|---|
+| **mozu-tray に任せる** | `[server] managed = true` | 応答がなければ mozu-tray が `speech serve` を起動し、終了するとき（異常終了でも）一緒に止める。すでに応答があれば起動しない |
+| 自分で動かす | `managed = false`（既定） | Windows サービスや手動で動かしておく。つながらないときはアイコンが灰色になるだけ |
+
+- `pwsh scripts\setup-speech.ps1 -EnableManaged` で、speech.cpp（Windows 用 Vulkan 版、約 30MB）とモデル（約 4.3GB）を `%APPDATA%\mozu\speech` に入れ、`managed = true` にする。`install.ps1` が尋ねて実行するのもこれ
+- 動かしている間、GPU のメモリを約 4.4GB 使う。ほかの GPU の作業と同時に動かすときは注意
+- 声は `%APPDATA%\mozu\voices\` に参照音声（`名前.wav`）か声のファイル（`名前.voice.gguf`）を置くと、`managed` のとき一緒に読み込む（既定の声は `none`）
 
 ## 設定
 
@@ -47,7 +61,9 @@ pwsh scripts\install.ps1        # 確認 → ビルド → bin\ に置く（PATH
 
 - `config.toml` — 声・速さ・出力デバイス、音声入力の言語・マイクなど
 - `readings.toml` — 読み方の辞書（例: `Zebra = "ゼブラ"`）
-- `logs\` — ログ
+- `logs\` — ログ（`speech.log` は mozu-tray が起動した speech.cpp の出力）
+- `speech\` — `setup-speech.ps1` が入れた speech.cpp とモデル
+- `voices\` — 声の置き場
 
 ## 制限
 
@@ -64,7 +80,8 @@ crates/config/             設定・読み方の辞書
 crates/text/               読み上げ前の下ごしらえ（Markdown の除去・カタカナ化・文の区切り）
 crates/audio/              録音・再生
 crates/speak/              読み上げ（合成と再生を並行）
-scripts/                   check.ps1（fmt / clippy / test）、install.ps1
+crates/server/             speech.cpp の起動・管理（managed のとき）
+scripts/                   check.ps1（fmt / clippy / test）、install.ps1、setup-speech.ps1
 docs/manual-test.md        手で確かめる項目
 ```
 

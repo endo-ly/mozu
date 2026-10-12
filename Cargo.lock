@@ -627,6 +627,7 @@ dependencies = [
  "clap",
  "mozu-audio",
  "mozu-config",
+ "mozu-server",
  "mozu-speak",
  "mozu-text",
  "speechcpp-client",
@@ -643,6 +644,16 @@ dependencies = [
  "mozu-text",
  "serde",
  "toml",
+]
+
+[[package]]
+name = "mozu-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mozu-config",
+ "tracing",
+ "windows",
 ]
 
 [[package]]
@@ -672,6 +683,7 @@ dependencies = [
  "hound",
  "mozu-audio",
  "mozu-config",
+ "mozu-server",
  "mozu-speak",
  "png",
  "speechcpp-client",

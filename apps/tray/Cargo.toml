@@ -10,6 +10,7 @@ arboard = { workspace = true }
 hound = { workspace = true }
 mozu-audio = { workspace = true }
 mozu-config = { workspace = true }
+mozu-server = { workspace = true }
 mozu-speak = { workspace = true }
 png = { workspace = true }
 speechcpp-client = { workspace = true }

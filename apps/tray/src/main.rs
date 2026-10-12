@@ -16,9 +16,10 @@ mod tray;
 mod ui;
 
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
+use mozu_server::{Managed, Spec};
 use mozu_speak::{SpeakOptions, Speaker};
 use speechcpp_client::Client;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
@@ -113,7 +114,18 @@ fn run() -> anyhow::Result<()> {
         ui,
         reader,
     );
-    spawn_health_watch(client, ui);
+    let spec = if config.server.managed {
+        match Spec::new(&config.server, client.base_url()) {
+            Ok(spec) => Some(spec),
+            Err(e) => {
+                tracing::error!("speech.cpp を起動できません: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    spawn_health_watch(client, ui, spec);
     spawn_quit_watch(ui)?;
     std::thread::spawn(move || app.run(rx));
 
@@ -125,12 +137,32 @@ fn run() -> anyhow::Result<()> {
 }
 
 /// speech.cpp の `/health` を定期的に確かめて、トレイのアイコンに反映する。
-/// サービスは起動しない（つながらないときは灰色のアイコンで知らせるだけ）。
-fn spawn_health_watch(client: speechcpp_client::Client, ui: ui::UiHandle) {
+///
+/// `spec` があるとき（`[server] managed = true`）だけ、応答がなければ speech.cpp を起動する。
+/// なければ、つながらないことを灰色のアイコンで知らせるだけにする（サービスは起動しない）。
+fn spawn_health_watch(client: speechcpp_client::Client, ui: ui::UiHandle, spec: Option<Spec>) {
     std::thread::spawn(move || {
+        let mut managed: Option<Managed> = None;
         let mut last = None;
         loop {
-            let result = client.health();
+            let mut result = client.health();
+            if result.is_err()
+                && let Some(spec) = &spec
+            {
+                if let Some(status) = managed.as_mut().and_then(Managed::exited) {
+                    tracing::warn!("speech.cpp が終了しました ({status})。起動し直します");
+                    managed = None;
+                }
+                if managed.is_none() {
+                    ui.server(false);
+                    match Managed::start(spec) {
+                        Ok(started) => {
+                            result = wait_until_ready(&client, managed.insert(started));
+                        }
+                        Err(e) => tracing::error!("{e:#}"),
+                    }
+                }
+            }
             let ok = result.is_ok();
             if last != Some(ok) {
                 match result {
@@ -143,6 +175,23 @@ fn spawn_health_watch(client: speechcpp_client::Client, ui: ui::UiHandle) {
             std::thread::sleep(HEALTH_INTERVAL);
         }
     });
+}
+
+/// 起動した speech.cpp が応答するまで待つ（モデルの読み込みに数秒かかる）。
+/// 初めてモデルを取得するときは長くかかるので、待ちきれなければ次の確認に回す。
+fn wait_until_ready(
+    client: &speechcpp_client::Client,
+    server: &mut Managed,
+) -> Result<(), speechcpp_client::Error> {
+    const LIMIT: Duration = Duration::from_secs(120);
+    let started = Instant::now();
+    loop {
+        let result = client.health();
+        if result.is_ok() || server.exited().is_some() || started.elapsed() > LIMIT {
+            return result;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
 }
 
 /// 終了の合図（名前付きイベント）を待つ。
