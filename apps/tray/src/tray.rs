@@ -1,6 +1,6 @@
 //! タスクトレイのアイコンとメニュー。アイコンの色で今の状態を見せる。
 //!
-//! 白: 待機中 / 赤: 録音中 / 黄: 認識中 / 灰: speech.cpp につながらない
+//! 白: 待機中 / 赤: 録音中 / 黄: 認識中 / 青: 読み上げ中 / 灰: speech.cpp につながらない
 
 use std::path::{Path, PathBuf};
 
@@ -31,25 +31,34 @@ pub enum Action {
     Quit,
 }
 
+/// メニューから開くファイルとフォルダ。
+pub struct Paths {
+    pub config: PathBuf,
+    pub readings: PathBuf,
+    pub logs: PathBuf,
+}
+
 pub struct Tray {
     icon: TrayIcon,
     status: MenuItem,
     autostart: CheckMenuItem,
     open_config: MenuItem,
+    open_readings: MenuItem,
     open_logs: MenuItem,
     quit: MenuItem,
-    config_path: PathBuf,
-    logs_dir: PathBuf,
+    paths: Paths,
     activity: Activity,
+    speaking: bool,
     /// `None` はまだ確かめていない。
     server: Option<bool>,
 }
 
 impl Tray {
-    pub fn new(config_path: &Path, logs_dir: &Path) -> anyhow::Result<Self> {
+    pub fn new(paths: Paths) -> anyhow::Result<Self> {
         let status = MenuItem::new("", false, None);
         let autostart = CheckMenuItem::new("ログオン時に起動", true, autostart::is_enabled(), None);
         let open_config = MenuItem::new("設定ファイルを開く", true, None);
+        let open_readings = MenuItem::new("読み方の辞書を開く", true, None);
         let open_logs = MenuItem::new("ログのフォルダを開く", true, None);
         let quit = MenuItem::new("終了", true, None);
         let menu = Menu::new();
@@ -58,6 +67,7 @@ impl Tray {
             &PredefinedMenuItem::separator(),
             &autostart,
             &open_config,
+            &open_readings,
             &open_logs,
             &PredefinedMenuItem::separator(),
             &quit,
@@ -65,7 +75,7 @@ impl Tray {
 
         let icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
-            .with_icon(icon(Activity::Idle, None)?)
+            .with_icon(icon(Activity::Idle, false, None)?)
             .build()
             .context("タスクトレイにアイコンを出せません")?;
 
@@ -74,11 +84,12 @@ impl Tray {
             status,
             autostart,
             open_config,
+            open_readings,
             open_logs,
             quit,
-            config_path: config_path.to_path_buf(),
-            logs_dir: logs_dir.to_path_buf(),
+            paths,
             activity: Activity::Idle,
+            speaking: false,
             server: None,
         };
         tray.refresh();
@@ -88,6 +99,13 @@ impl Tray {
     pub fn set_activity(&mut self, activity: Activity) {
         if self.activity != activity {
             self.activity = activity;
+            self.refresh();
+        }
+    }
+
+    pub fn set_speaking(&mut self, speaking: bool) {
+        if self.speaking != speaking {
+            self.speaking = speaking;
             self.refresh();
         }
     }
@@ -105,9 +123,11 @@ impl Tray {
             // クリックした時点で、チェックはもう切り替わっている
             Some(Action::SetAutostart(self.autostart.is_checked()))
         } else if id == self.open_config.id() {
-            Some(Action::Open(self.config_path.clone()))
+            Some(Action::Open(self.paths.config.clone()))
+        } else if id == self.open_readings.id() {
+            Some(Action::Open(self.paths.readings.clone()))
         } else if id == self.open_logs.id() {
-            Some(Action::Open(self.logs_dir.clone()))
+            Some(Action::Open(self.paths.logs.clone()))
         } else if id == self.quit.id() {
             Some(Action::Quit)
         } else {
@@ -122,6 +142,7 @@ impl Tray {
 
     fn refresh(&self) {
         let activity = match self.activity {
+            Activity::Idle if self.speaking => "読み上げ中",
             Activity::Idle => "待機中",
             Activity::Recording => "録音中",
             Activity::Busy => "認識中",
@@ -133,10 +154,8 @@ impl Tray {
         };
         let text = format!("{activity}（{server}）");
         self.status.set_text(&text);
-        let _ = self
-            .icon
-            .set_tooltip(Some(format!("mozu dictation — {text}")));
-        match icon(self.activity, self.server) {
+        let _ = self.icon.set_tooltip(Some(format!("mozu — {text}")));
+        match icon(self.activity, self.speaking, self.server) {
             Ok(icon) => {
                 let _ = self.icon.set_icon(Some(icon));
             }
@@ -146,6 +165,14 @@ impl Tray {
 }
 
 pub fn open(path: &Path) {
+    // .toml には関連付けがないことが多く、ShellExecute は「アプリを選ぶ」ダイアログを
+    // 出して成功を返してしまうので、ファイルはメモ帳で直接開く
+    if path.is_file() {
+        if let Err(e) = std::process::Command::new("notepad.exe").arg(path).spawn() {
+            tracing::warn!("{} をメモ帳で開けません: {e}", path.display());
+        }
+        return;
+    }
     let path = HSTRING::from(path.as_os_str());
     let result = unsafe { ShellExecuteW(None, w!("open"), &path, None, None, SW_SHOWNORMAL) };
     // 32 以下はエラー
@@ -155,12 +182,13 @@ pub fn open(path: &Path) {
 }
 
 /// 32×32 の丸いアイコンを描く。
-fn icon(activity: Activity, server: Option<bool>) -> anyhow::Result<Icon> {
+fn icon(activity: Activity, speaking: bool, server: Option<bool>) -> anyhow::Result<Icon> {
     const SIZE: u32 = 32;
     let fill: [u8; 3] = match (activity, server) {
         (Activity::Recording, _) => [0xE5, 0x39, 0x35],
         (Activity::Busy, _) => [0xFF, 0xB3, 0x00],
         (Activity::Idle, Some(false)) => [0x8A, 0x8A, 0x8A],
+        (Activity::Idle, _) if speaking => [0x42, 0xA5, 0xF5],
         (Activity::Idle, _) => [0xF2, 0xF2, 0xF2],
     };
     let outline = [0x20, 0x20, 0x20];

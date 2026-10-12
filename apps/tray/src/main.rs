@@ -1,101 +1,124 @@
-//! mozu dictation — Ctrl+Win を押している間だけ録音し、speech.cpp で文字にして、
-//! 前面のアプリの入力欄に貼り付ける。タスクトレイに常駐する。
+//! mozu-tray — タスクトレイに常駐する、mozu の入り口。
+//!
+//! - Ctrl+Win を押している間だけ録音し、文字にして、前面のアプリの入力欄に貼り付ける（音声入力）
+//! - Ctrl+Win+Alt で、選択中の文を読み上げる。読み上げ中にもう一度押すと止まる
 
 // リリース版はコンソールを出さない（デバッグ版はログを見るために出す）
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
 mod autostart;
-mod config;
 mod hotkey;
 mod insert;
-mod recorder;
+mod reader;
 mod sound;
 mod tray;
 mod ui;
 
-use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::Context;
+use mozu_speak::{SpeakOptions, Speaker};
+use speechcpp_client::Client;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HANDLE};
-use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 use windows::Win32::System::Threading::{
     CreateEventW, CreateMutexW, INFINITE, WaitForSingleObject,
 };
 use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
 use windows::core::{HSTRING, w};
 
-/// これを立てると、動いている mozu-dictation が終わる（`scripts\install.ps1` が使う）。
-const QUIT_EVENT: windows::core::PCWSTR = w!(r"Local\mozu-dictation-quit");
+/// これを立てると、動いている mozu-tray が終わる（`scripts\install.ps1` が使う）。
+const QUIT_EVENT: windows::core::PCWSTR = w!(r"Local\mozu-tray-quit");
 
 /// speech.cpp の状態を確かめる間隔。
 const HEALTH_INTERVAL: Duration = Duration::from_secs(30);
 
 fn main() {
-    if std::env::args().any(|a| a == "--list-devices") {
-        // コンソールのないアプリなので、起動元のターミナルに出す
-        let _ = unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
-        match recorder::list_devices() {
-            Ok(names) => names.iter().for_each(|n| println!("{n}")),
-            Err(e) => eprintln!("{e:#}"),
-        }
-        return;
-    }
-
     if let Err(e) = run() {
         tracing::error!("{e:#}");
         // コンソールがないので、起動に失敗したことはダイアログで知らせる
         let text = HSTRING::from(format!("起動できませんでした。\n\n{e:#}"));
-        unsafe { MessageBoxW(None, &text, w!("mozu dictation"), MB_OK | MB_ICONERROR) };
+        unsafe { MessageBoxW(None, &text, w!("mozu"), MB_OK | MB_ICONERROR) };
     }
 }
 
 fn run() -> anyhow::Result<()> {
     // 2 つ起動すると、1 回の Ctrl+Win で 2 回貼り付けてしまう
-    let _instance = unsafe { CreateMutexW(None, true, w!(r"Local\mozu-dictation"))? };
+    let _instance = unsafe { CreateMutexW(None, true, w!(r"Local\mozu-tray"))? };
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-        eprintln!("mozu-dictation はすでに起動しています");
+        eprintln!("mozu-tray はすでに起動しています");
         return Ok(());
     }
 
-    let dir = config::data_dir()?;
-    let logs = dir.join("logs");
+    let logs = mozu_config::data_dir()?.join("logs");
     std::fs::create_dir_all(&logs).with_context(|| format!("{} を作れません", logs.display()))?;
     let _log_guard = init_logging(&logs)?;
     tracing::info!("起動しました ({})", std::env::current_exe()?.display());
 
-    match load_dotenv() {
+    match mozu_config::load_dotenv() {
         Ok(Some(path)) => tracing::info!(".env: {}", path.display()),
         Ok(None) => tracing::info!(".env がないので既定の接続先を使います"),
         Err(e) => tracing::warn!(".env を読めません: {e:#}"),
     }
 
-    let config_path = dir.join("dictation.toml");
-    let config = config::load(&config_path)?;
-    tracing::info!("設定: {}", config_path.display());
-    match recorder::list_devices() {
-        Ok(names) => tracing::info!("入力デバイス: {}", names.join(" / ")),
-        Err(e) => tracing::warn!("入力デバイスの一覧を取れません: {e:#}"),
+    let config = mozu_config::load()?;
+    let paths = tray::Paths {
+        config: mozu_config::config_path()?,
+        readings: mozu_config::readings_path()?,
+        logs: logs.clone(),
+    };
+    tracing::info!("設定: {}", paths.config.display());
+    for (kind, list) in [
+        ("入力", mozu_audio::list_inputs()),
+        ("出力", mozu_audio::list_outputs()),
+    ] {
+        match list {
+            Ok(names) => tracing::info!("{kind}デバイス: {}", names.join(" / ")),
+            Err(e) => tracing::warn!("{kind}デバイスの一覧を取れません: {e:#}"),
+        }
     }
     sound::init(config.sounds);
 
+    let client = Client::new(
+        speechcpp_client::base_url_from_env(),
+        config.request_timeout(),
+    );
+    let speaker = Speaker::new(
+        client.clone(),
+        mozu_config::load_readings()?,
+        SpeakOptions {
+            voice: config.speech.voice.clone(),
+            speed: config.speech.speed,
+            seed: None,
+            sentence_pause: Duration::from_millis(config.speech.sentence_pause_ms),
+            paragraph_pause: Duration::from_millis(config.speech.paragraph_pause_ms),
+        },
+    );
+
     let ui = ui::create_window()?;
-    let tray = tray::Tray::new(&config_path, &logs)?;
+    let tray = tray::Tray::new(paths)?;
 
     let (tx, rx) = mpsc::channel();
-    let app = app::App::new(config, dir.join("dictation-last.wav"), tx.clone(), ui);
-    spawn_health_watch(app.client().clone(), ui);
+    let reader = reader::Reader::new(speaker, config.speech.output_device.clone(), ui);
+    let app = app::App::new(
+        config.dictation,
+        client.clone(),
+        mozu_config::data_dir()?.join("dictation-last.wav"),
+        tx.clone(),
+        ui,
+        reader,
+    );
+    spawn_health_watch(client, ui);
     spawn_quit_watch(ui)?;
     std::thread::spawn(move || app.run(rx));
 
     hotkey::install(tx)?;
-    tracing::info!("Ctrl+Win を押している間だけ録音します");
+    tracing::info!("Ctrl+Win: 音声入力 / Ctrl+Win+Alt: 選択中の文を読み上げ");
     ui::run(ui, tray)?;
     tracing::info!("終了しました");
     Ok(())
@@ -135,31 +158,14 @@ fn spawn_quit_watch(ui: ui::UiHandle) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// mozu の `.env` を読む。実行ファイルの場所から上へ、次にカレントディレクトリから上へ探す
-/// （`target\release\` から動かしても、インストール先から動かしても見つかるように）。
-/// すでに設定されている環境変数は上書きしない。
-fn load_dotenv() -> anyhow::Result<Option<PathBuf>> {
-    let exe_dir = std::env::current_exe()?.parent().map(Path::to_path_buf);
-    let cwd = std::env::current_dir().ok();
-    let found = [exe_dir, cwd]
-        .into_iter()
-        .flatten()
-        .flat_map(|dir| dir.ancestors().map(|d| d.join(".env")).collect::<Vec<_>>())
-        .find(|p| p.is_file());
-    if let Some(path) = &found {
-        dotenvy::from_path(path)?;
-    }
-    Ok(found)
-}
-
-/// コンソールと `%APPDATA%\mozu\logs\dictation.<日付>.log` の両方に出す。
-/// 既定は info。`RUST_LOG=debug` にすると認識結果の文字列もログに残る。
+/// コンソールと `%APPDATA%\mozu\logs\tray.<日付>.log` の両方に出す。
+/// 既定は info。`RUST_LOG=debug` にすると認識結果や読み上げる文もログに残る。
 fn init_logging(
     dir: &std::path::Path,
 ) -> anyhow::Result<tracing_appender::non_blocking::WorkerGuard> {
     let file = RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
-        .filename_prefix("dictation")
+        .filename_prefix("tray")
         .filename_suffix("log")
         .max_log_files(14)
         .build(dir)

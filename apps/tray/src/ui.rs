@@ -25,6 +25,7 @@ use crate::{autostart, hotkey};
 
 const WM_APP_ACTIVITY: u32 = WM_APP + 1;
 const WM_APP_SERVER: u32 = WM_APP + 2;
+const WM_APP_SPEAKING: u32 = WM_APP + 3;
 
 /// 取りこぼしたキーの解放を補う間隔。
 const TIMER_RESYNC: usize = 1;
@@ -49,6 +50,10 @@ impl UiHandle {
             Activity::Busy => 2,
         };
         self.post(WM_APP_ACTIVITY, code);
+    }
+
+    pub fn speaking(self, speaking: bool) {
+        self.post(WM_APP_SPEAKING, speaking as usize);
     }
 
     pub fn server(self, ok: bool) {
@@ -77,7 +82,7 @@ pub fn create_window() -> anyhow::Result<UiHandle> {
         let class = WNDCLASSW {
             lpfnWndProc: Some(wndproc),
             hInstance: instance,
-            lpszClassName: w!("mozu-dictation"),
+            lpszClassName: w!("mozu-tray"),
             ..Default::default()
         };
         if RegisterClassW(&class) == 0 {
@@ -88,8 +93,8 @@ pub fn create_window() -> anyhow::Result<UiHandle> {
         }
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE(0),
-            w!("mozu-dictation"),
-            w!("mozu dictation"),
+            w!("mozu-tray"),
+            w!("mozu"),
             WS_OVERLAPPED,
             0,
             0,
@@ -159,6 +164,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             with_tray(|t| t.set_activity(activity));
         }
         WM_APP_SERVER => with_tray(|t| t.set_server(wparam.0 != 0)),
+        WM_APP_SPEAKING => with_tray(|t| t.set_speaking(wparam.0 != 0)),
         WM_TIMER if wparam.0 == TIMER_RESYNC => hotkey::resync(),
         WM_TIMER if wparam.0 == TIMER_REHOOK => hotkey::reinstall(),
         WM_POWERBROADCAST if wparam.0 as u32 == PBT_APMRESUMEAUTOMATIC => {

@@ -1,25 +1,33 @@
-//! 録音から貼り付けまでの状態の管理。
+//! ホットキーを受けて、録音から貼り付けまで（音声入力）と、読み上げを動かす。
 //!
-//! 状態は `Idle → Recording → Busy（認識と貼り付け）→ Idle`。
+//! 音声入力の状態は `Idle → Recording → Busy（認識と貼り付け）→ Idle`。
 //! Busy の間にホットキーが押されても無視して、二重に録音・送信しない。
+//! 読み上げ（`Reader`）は音声入力とは別に動く。
 
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
+use mozu_audio::{Recorder, Recording};
+use mozu_config::DictationConfig;
 use speechcpp_client::{Client, TranscribeOptions};
 
-use crate::config::Config;
 use crate::insert::{self, Target};
-use crate::recorder::{Recorder, Recording};
+use crate::reader::Reader;
 use crate::sound::{self, Cue};
 use crate::tray::Activity;
 use crate::ui::UiHandle;
+
+/// 録音開始の音を鳴らすまでの待ち。Ctrl+Win に続けて Alt を押した（読み上げの合図）ときに、
+/// 録音開始の音が一瞬鳴ってしまわないようにする。
+const START_CUE_DELAY: Duration = Duration::from_millis(150);
 
 pub enum Event {
     HotkeyPressed,
     HotkeyReleased,
     HotkeyCancelled,
+    /// Ctrl+Win+Alt。
+    ReadPressed,
     /// 認識と貼り付けが終わった（成否はログと効果音で知らせ済み）。
     Done,
 }
@@ -30,6 +38,7 @@ enum State {
         recorder: Recorder,
         started: Instant,
         target: Target,
+        cue_played: bool,
     },
     Busy,
 }
@@ -45,20 +54,24 @@ impl State {
 }
 
 pub struct App {
-    config: Config,
+    config: DictationConfig,
     client: Client,
     options: TranscribeOptions,
     last_wav: Option<PathBuf>,
     events: Sender<Event>,
     ui: UiHandle,
+    reader: Reader,
 }
 
 impl App {
-    pub fn new(config: Config, last_wav: PathBuf, events: Sender<Event>, ui: UiHandle) -> Self {
-        let client = Client::new(
-            speechcpp_client::base_url_from_env(),
-            Duration::from_secs(config.request_timeout_secs),
-        );
+    pub fn new(
+        config: DictationConfig,
+        client: Client,
+        last_wav: PathBuf,
+        events: Sender<Event>,
+        ui: UiHandle,
+        reader: Reader,
+    ) -> Self {
         let non_empty = |s: &str| (!s.is_empty()).then(|| s.to_owned());
         let options = TranscribeOptions {
             language: non_empty(&config.language),
@@ -73,16 +86,42 @@ impl App {
             last_wav,
             events,
             ui,
+            reader,
         }
     }
 
-    pub fn client(&self) -> &Client {
-        &self.client
-    }
-
-    pub fn run(self, events: Receiver<Event>) {
+    pub fn run(mut self, events: Receiver<Event>) {
         let mut state = State::Idle;
-        for event in events {
+        loop {
+            // 録音開始の音がまだなら、その時刻までだけ待つ
+            let cue_due = match &state {
+                State::Recording {
+                    started,
+                    cue_played: false,
+                    ..
+                } => Some(*started + START_CUE_DELAY),
+                _ => None,
+            };
+            let event = match cue_due {
+                Some(due) => {
+                    match events.recv_timeout(due.saturating_duration_since(Instant::now())) {
+                        Ok(event) => event,
+                        Err(RecvTimeoutError::Timeout) => {
+                            if let State::Recording { cue_played, .. } = &mut state {
+                                sound::play(Cue::Start);
+                                *cue_played = true;
+                            }
+                            continue;
+                        }
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    }
+                }
+                None => match events.recv() {
+                    Ok(event) => event,
+                    Err(_) => return,
+                },
+            };
+
             let before = state.activity();
             state = self.step(state, event);
             if state.activity() != before {
@@ -91,18 +130,18 @@ impl App {
         }
     }
 
-    fn step(&self, state: State, event: Event) -> State {
+    fn step(&mut self, state: State, event: Event) -> State {
         match (state, event) {
             (State::Idle, Event::HotkeyPressed) => {
                 let target = Target::foreground();
                 match Recorder::start(&self.config.input_device, self.config.max_record_secs) {
                     Ok(recorder) => {
-                        sound::play(Cue::Start);
                         tracing::info!("録音開始");
                         State::Recording {
                             recorder,
                             started: Instant::now(),
                             target,
+                            cue_played: false,
                         }
                     }
                     Err(e) => {
@@ -117,6 +156,7 @@ impl App {
                     recorder,
                     started,
                     target,
+                    ..
                 },
                 Event::HotkeyReleased,
             ) => {
@@ -141,6 +181,17 @@ impl App {
                 drop(recorder.stop());
                 tracing::info!("ほかのキーが押されたので録音を取り消しました");
                 State::Idle
+            }
+            (state, Event::ReadPressed) => {
+                let state = match state {
+                    State::Recording { recorder, .. } => {
+                        drop(recorder.stop());
+                        State::Idle
+                    }
+                    other => other,
+                };
+                self.reader.toggle();
+                state
             }
             (State::Busy, Event::Done) => State::Idle,
             (State::Busy, Event::HotkeyPressed) => {
