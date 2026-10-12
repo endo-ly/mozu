@@ -35,10 +35,6 @@ speed = 1.4
 # 出力デバイス名の一部（大文字小文字は区別しない）。空なら Windows の既定。一覧は `mozu devices`
 output_device = ""
 
-# 文と文の間、段落と段落の間（ミリ秒）
-sentence_pause_ms = 200
-paragraph_pause_ms = 450
-
 [server]
 # true にすると、mozu-tray が speech.cpp（speech serve）を自分で起動し、終了するときに止める。
 # すでに応答があれば起動しない（Windows サービスなどで動かしているなら false のままでよい）。
@@ -102,8 +98,6 @@ pub struct SpeechConfig {
     pub voice: String,
     pub speed: f32,
     pub output_device: String,
-    pub sentence_pause_ms: u64,
-    pub paragraph_pause_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -147,8 +141,6 @@ impl Default for SpeechConfig {
             voice: "none".into(),
             speed: 1.4,
             output_device: String::new(),
-            sentence_pause_ms: 200,
-            paragraph_pause_ms: 450,
         }
     }
 }

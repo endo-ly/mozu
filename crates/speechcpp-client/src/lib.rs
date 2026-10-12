@@ -3,6 +3,7 @@
 //! mozu のアプリはすべてこのクレートを通して speech.cpp を使う。
 //! サーバーの起動・停止はしない（Windows サービス `speechcpp` が常駐している）。
 
+use std::io::Read;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -48,30 +49,68 @@ pub struct TranscribeOptions {
 }
 
 /// `POST /v1/audio/speech` の要求。
+///
+/// 文章は丸ごと送ってよい。speech.cpp が文ごとに分けて合成し（長すぎる文は読点で切る）、
+/// どの文も同じ種で読み、文と文の間を空けてつなぐ。
 #[derive(Debug, Clone, Serialize)]
 pub struct SpeechRequest {
     pub input: String,
     pub voice: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// speechcpp はサーバー側に既定値を持たないので、呼び出す側が毎回送る。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speed: Option<f32>,
+    /// `None` ならサーバーが選ぶ（選んだ値は `SpeechStream::seed`）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
-    pub response_format: String,
 }
 
 impl SpeechRequest {
-    /// WAV で返す要求を作る。
-    pub fn wav(input: impl Into<String>, voice: impl Into<String>) -> Self {
+    pub fn new(input: impl Into<String>, voice: impl Into<String>) -> Self {
         Self {
             input: input.into(),
             voice: voice.into(),
             model: None,
             speed: None,
             seed: None,
-            response_format: "wav".into(),
+        }
+    }
+}
+
+/// 合成した分から順に届く音声（16bit・リトルエンディアン・モノラルの PCM）。
+/// 落とすと接続が切れ、サーバーは残りの合成をやめる。
+pub struct SpeechStream {
+    pub sample_rate: u32,
+    /// 合成に使った種。同じ種を送ると同じ読み方になる。
+    pub seed: Option<u64>,
+    reader: ureq::BodyReader<'static>,
+    /// 前回の読み出しで余った 1 バイト（サンプルの途中で切れたとき）。
+    odd: Option<u8>,
+}
+
+impl SpeechStream {
+    /// 次に届いた分を -1.0〜1.0 のサンプルにして返す。終わりまで読んだら `None`。
+    pub fn next_samples(&mut self) -> Result<Option<Vec<f32>>> {
+        let mut buf = [0u8; 16 * 1024];
+        loop {
+            let n = self.reader.read(&mut buf).map_err(read_error)?;
+            if n == 0 {
+                return Ok(None);
+            }
+            let mut bytes = Vec::with_capacity(n + 1);
+            bytes.extend(self.odd.take());
+            bytes.extend_from_slice(&buf[..n]);
+            if bytes.len() % 2 == 1 {
+                self.odd = bytes.pop();
+            }
+            if !bytes.is_empty() {
+                return Ok(Some(
+                    bytes
+                        .chunks_exact(2)
+                        .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
+                        .collect(),
+                ));
+            }
         }
     }
 }
@@ -97,6 +136,7 @@ pub struct VoiceInfo {
 pub struct Client {
     base_url: String,
     agent: ureq::Agent,
+    timeout: Duration,
 }
 
 impl Client {
@@ -109,6 +149,7 @@ impl Client {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_owned(),
             agent,
+            timeout,
         }
     }
 
@@ -197,21 +238,55 @@ impl Client {
             .collect())
     }
 
-    /// 文章を音声にして、音声ファイルの中身（既定は WAV）を返す。
-    pub fn speech(&self, request: &SpeechRequest) -> Result<Vec<u8>> {
-        let json = serde_json::to_vec(request).map_err(|e| Error::Decode(e.to_string()))?;
+    /// 文章を音声にし、合成した分から順に受け取る。
+    ///
+    /// 長い文章は合成し終えるまで時間がかかるので、待つ上限は応答が始まるまでにだけ掛ける。
+    pub fn speech(&self, request: &SpeechRequest) -> Result<SpeechStream> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            #[serde(flatten)]
+            request: &'a SpeechRequest,
+            response_format: &'static str,
+        }
+        let body = Body {
+            request,
+            response_format: "pcm",
+        };
+        let json = serde_json::to_vec(&body).map_err(|e| Error::Decode(e.to_string()))?;
         let mut res = self
             .agent
             .post(format!("{}/v1/audio/speech", self.base_url))
+            .config()
+            .timeout_global(None)
+            .timeout_recv_response(Some(self.timeout))
+            .build()
             .header("Content-Type", "application/json")
             .send(&json[..])?;
         check_status(&mut res)?;
-        // 30 秒・48kHz・16bit で約 3MB。余裕を見て 64MB まで読む。
-        Ok(res
-            .body_mut()
-            .with_config()
-            .limit(64 * 1024 * 1024)
-            .read_to_vec()?)
+        let header = |name: &str| {
+            res.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+        };
+        let sample_rate = header("X-Sample-Rate")
+            .and_then(|r| u32::try_from(r).ok())
+            .ok_or_else(|| Error::Decode("X-Sample-Rate がありません".into()))?;
+        let seed = header("X-Speech-Seed");
+        Ok(SpeechStream {
+            sample_rate,
+            seed,
+            reader: res.into_body().into_reader(),
+            odd: None,
+        })
+    }
+}
+
+/// 本文を読む途中の失敗。
+fn read_error(e: std::io::Error) -> Error {
+    match e.downcast::<ureq::Error>() {
+        Ok(e) => Error::Transport(e),
+        Err(e) => Error::Transport(ureq::Error::Io(e)),
     }
 }
 
@@ -321,14 +396,41 @@ mod tests {
     fn roundtrip_against_service() {
         let client = Client::new(DEFAULT_BASE_URL, Duration::from_secs(60));
         client.health().unwrap();
-        let mut request = SpeechRequest::wav("今日はいい天気ですね。", "musa");
+        let mut request = SpeechRequest::new("今日はいい天気ですね。", "musa");
         request.speed = Some(1.4);
-        let wav = client.speech(&request).unwrap();
+        let mut stream = client.speech(&request).unwrap();
+        let mut samples = Vec::new();
+        while let Some(chunk) = stream.next_samples().unwrap() {
+            samples.extend(chunk);
+        }
+        let wav = wav_bytes(&samples, stream.sample_rate);
         let options = TranscribeOptions {
             language: Some("ja".into()),
             ..Default::default()
         };
         let text = client.transcribe(&wav, &options).unwrap();
         assert!(text.contains("天気"), "認識結果: {text}");
+    }
+
+    /// 16bit PCM モノラルの WAV（このクレートは WAV を扱わないので、テスト用に組む）。
+    fn wav_bytes(samples: &[f32], rate: u32) -> Vec<u8> {
+        let data = samples.len() as u32 * 2;
+        let mut out = Vec::new();
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(36 + data).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        out.extend_from_slice(&1u16.to_le_bytes()); // モノラル
+        out.extend_from_slice(&rate.to_le_bytes());
+        out.extend_from_slice(&(rate * 2).to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&data.to_le_bytes());
+        for s in samples {
+            out.extend_from_slice(&((s * 32767.0) as i16).to_le_bytes());
+        }
+        out
     }
 }

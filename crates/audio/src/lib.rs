@@ -30,19 +30,6 @@ pub fn resample(samples: &[f32], from: u32, to: u32) -> Vec<f32> {
         .collect()
 }
 
-/// 前後の無音を切り落とす。合成した声の頭と尻の余白をそろえるために使う。
-pub fn trim_silence(samples: &[f32], threshold: f32) -> &[f32] {
-    let start = samples
-        .iter()
-        .position(|s| s.abs() > threshold)
-        .unwrap_or(samples.len());
-    let end = samples
-        .iter()
-        .rposition(|s| s.abs() > threshold)
-        .map_or(start, |i| i + 1);
-    &samples[start..end]
-}
-
 /// 二乗平均平方根（音の大きさの目安）。
 pub fn rms(samples: &[f32]) -> f32 {
     if samples.is_empty() {
@@ -61,13 +48,6 @@ mod tests {
         let out = resample(&samples, 48_000, 16_000);
         assert_eq!(out.len(), 160);
         assert!((out[80] - samples[240]).abs() < 1e-3);
-    }
-
-    #[test]
-    fn trims_silence() {
-        let samples = [0.0, 0.001, 0.5, -0.4, 0.002, 0.0];
-        assert_eq!(trim_silence(&samples, 0.01), &[0.5, -0.4]);
-        assert!(trim_silence(&[0.0; 4], 0.01).is_empty());
     }
 
     /// 既定のマイクから 1 秒録って WAV にする。
