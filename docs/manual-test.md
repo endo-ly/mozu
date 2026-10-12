@@ -41,6 +41,21 @@
 | C3 | `mozu say -o test.wav "テストです"` → `mozu transcribe test.wav` | 「テストです」に戻る |
 | C4 | `mozu listen` で話して黙る | 話し終わって約 1 秒で文字が出る |
 | C5 | `mozu say --show "Zebraを見た"` | 「辞書にない語: Zebra」が出る |
+| C6 | `mozu doctor` | 各項目が `[OK]` で、「問題ありません」と出る |
+
+## speech.cpp の管理（まっさらな環境や別の PC で）
+
+この PC は Windows サービスで動かしているので、`managed = false` のまま確かめられない。別の PC か、サービスを使わない環境で行う。
+
+| # | 場面 | 操作 | 期待する結果 |
+|---|---|---|---|
+| M1 | 導入 | speech.cpp がない状態で `pwsh scripts\install.ps1` | 入れるか尋ねる。Y で本体とモデルが入り、`managed = true` になり、最後の `mozu doctor` が全部 `[OK]` |
+| M2 | 起動 | `managed = true` で mozu-tray を起動 | 数秒〜十数秒でアイコンが灰色から白になる。`mozu health` が通る |
+| M3 | 終了 | トレイの「終了」 | speech.exe のプロセスも消える（タスクマネージャーで確認） |
+| M4 | 異常終了 | mozu-tray を強制終了（タスクマネージャー） | speech.exe も一緒に消える |
+| M5 | 再起動 | speech.exe だけを強制終了 | 30 秒以内に起動し直され、アイコンが白に戻る |
+| M6 | すでに動いている | 手で `speech serve` を動かしてから mozu-tray を起動 | mozu-tray は起動せず、そのまま使える。mozu-tray を終了しても、手で動かした方は残る |
+| M7 | 声 | `%APPDATA%\mozu\voices\` に `名前.wav` を置いて mozu-tray を起動し直す | `mozu voices` に名前が出て、`--voice 名前` で使える |
 
 ## 異常時
 

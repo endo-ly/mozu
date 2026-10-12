@@ -5,6 +5,7 @@ members = [
   "crates/text",
   "crates/audio",
   "crates/speak",
+  "crates/server",
   "apps/tray",
   "apps/cli",
 ]
@@ -21,6 +22,7 @@ mozu-config = { path = "crates/config" }
 mozu-text = { path = "crates/text" }
 mozu-audio = { path = "crates/audio" }
 mozu-speak = { path = "crates/speak" }
+mozu-server = { path = "crates/server" }
 anyhow = "1.0.104"
 dotenvy = "0.15.7"
 arboard = { version = "3.6.1", default-features = false }

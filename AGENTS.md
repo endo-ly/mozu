@@ -14,16 +14,19 @@ mozu/
 │  ├─ config/            # mozu-config — 設定・読み方の辞書・.env の読み込み（tray と cli で共有）
 │  ├─ text/              # mozu-text — 読み上げ前の下ごしらえ（Markdown の除去・カタカナ化・文の区切り）
 │  ├─ audio/             # mozu-audio — 録音・再生（cpal）、WAV の読み書き
-│  └─ speak/             # mozu-speak — 読み上げ（下ごしらえ → 文ごとに合成 → 再生、を並行して進める）
+│  ├─ speak/             # mozu-speak — 読み上げ（下ごしらえ → 文ごとに合成 → 再生、を並行して進める）
+│  └─ server/            # mozu-server — speech.cpp（speech serve）の探索・起動・停止。managed のときだけ使う
 ├─ scripts/
 │  ├─ check.ps1          # 整形・clippy（警告はエラー）・テスト
-│  └─ install.ps1        # check → ビルド → bin\ に入れ替え → mozu-tray を起動
+│  ├─ install.ps1        # check → ビルド → bin\ に入れ替え →（なければ speech.cpp を導入）→ mozu-tray を起動 → mozu doctor
+│  └─ setup-speech.ps1   # speech.cpp の最新版（Windows 用 Vulkan 版）を GitHub から取り、チェックサムを確かめて %APPDATA%\mozu\speech に入れる。モデルは speech pull
 ├─ docs/manual-test.md   # 手で確かめる項目
 └─ bin/                  # インストール先（Git に入れない。ユーザーの PATH に入っている）
 ```
 
 - **エンジンは speech.cpp (`https://github.com/nyosegawa/speech.cpp`)**。Windows サービス `speechcpp` が `127.0.0.1:8012` で常駐し、Qwen3-ASR 1.7B・Irodori-TTS・silero-vad を載せている。マニフェストは `C:\svc\runtimes\winsvc\manifests\speechcpp.yaml`
-- **mozu はサーバーを起動・停止しない。** `/health` が応答しないときは、エラーとして知らせるだけにする
+- **mozu は、既定ではサーバーを起動・停止しない。** `/health` が応答しないときは、エラーとして知らせるだけにする。例外は `[server] managed = true` のときだけで、このときは mozu-tray が応答のないサーバーを起動し、終了時に止める（Windows のジョブオブジェクトで、mozu-tray が落ちても一緒に止まる）。応答がある間は何もしない
+- **この PC（作業場）では `managed = false` のまま。** speech.cpp は Windows サービス `speechcpp` で常時動いていて、作業場の決まりでエージェントがサーバーを起動してはいけない。動作確認で本物の speech.exe を起動するときは、サービスと別のポート・小さなモデル・CPU にする（`cargo test -p mozu-server -- --ignored`）
 - アプリは speech.cpp を `speechcpp-client` 経由で直接呼ぶ。間に中継サーバー（旧 voice-gateway のようなもの）は置かない
 - **常駐は `mozu-tray` 1 つにまとめる。** 新しい機能は、別の常駐アプリを作らず、ホットキーを足して tray に入れる
 - 共通の処理は、2 つ目の使い道ができた時点で `crates/` に移す
@@ -33,7 +36,9 @@ mozu/
 | 場所 | 内容 |
 |---|---|
 | mozu の `.env` | 環境ごとの値。`MOZU_SPEECHCPP_URL`（なければ `http://127.0.0.1:8012`）。ひな形は `.env.example`、Git に入れない。実行ファイルの場所とカレントディレクトリから上へ探す |
-| `%APPDATA%\mozu\config.toml` | 使い方の好み。`[speech]`（声・速さ・出力デバイス・文の間）と `[dictation]`（言語・マイク・待ち時間など）。なければ説明付きで作られる |
+| `%APPDATA%\mozu\config.toml` | 使い方の好み。`[speech]`（声・速さ・出力デバイス・文の間）、`[server]`（speech.cpp を mozu-tray が起動するか・exe・モデル・デバイス・声の置き場）、`[dictation]`（言語・マイク・待ち時間など）。なければ説明付きで作られる。既存のファイルは書き換えない（足りない項目は既定値） |
+| `%APPDATA%\mozu\speech\` | `setup-speech.ps1` が入れた speech.cpp（`bin\`）とモデル（`models\`）。mozu 自身が入れたものは `SPEECH_MODEL_DIR` をここにして起動する |
+| `%APPDATA%\mozu\voices\` | 声の置き場。`名前.wav` / `名前.voice.gguf` を `--add-voice 名前=ファイル` として渡す（managed のとき） |
 | `%APPDATA%\mozu\readings.toml` | 読み方の辞書（英単語 → カタカナ）。組み込みの辞書（`crates/text/src/readings.default.toml`、約 200 語）より優先 |
 | `%APPDATA%\mozu\logs\` | `tray.<日付>.log`（14 日分）。認識した文字列や読み上げた文は既定では残さない（`RUST_LOG=debug` で残る） |
 
@@ -73,7 +78,7 @@ cargo test -- --ignored             # speechcpp サービス・マイク・ス�
 
 | モジュール | 役割 |
 |---|---|
-| `main.rs` | 起動。二重起動の防止、ログ、`.env`、設定、各スレッドの起動。起動に失敗したらダイアログで知らせる。30 秒ごとに speech.cpp の `/health` を確かめてトレイに反映する（サービスは起動しない） |
+| `main.rs` | 起動。二重起動の防止、ログ、`.env`、設定、各スレッドの起動。起動に失敗したらダイアログで知らせる。30 秒ごとに speech.cpp の `/health` を確かめてトレイに反映する。`managed = true` のときだけ、応答がなければ `mozu-server` で起動する（起動後は応答するまで最大 120 秒待つ。終わっていたら次の確認で起動し直す） |
 | `ui.rs` | メインスレッドの見えないウィンドウとメッセージループ。フック・トレイ・タイマーはここで動く。ほかのスレッドは `UiHandle` でメッセージを送って状態を知らせる |
 | `tray.rs` | トレイのアイコン（白: 待機 / 赤: 録音 / 黄: 認識 / 青: 読み上げ / 灰: speech.cpp につながらない）とメニュー |
 | `autostart.rs` | ログオン時の起動の登録・解除 |
@@ -100,6 +105,7 @@ mozu say --show "文章"               # 合成せず、読み上げる文と辞
 mozu transcribe memo.m4a             # 文字起こし（WAV 以外は FFmpeg で変換）
 mozu listen                          # マイクで聞いて、話し終わったら文字を出力
 mozu voices / devices / health
+mozu doctor                          # 設定・サーバー・モデル・声・マイク・スピーカー・FFmpeg を確かめ、直し方を示す（NG があれば終了コード 1）
 ```
 
 - ログは標準エラーに出す（`-v` で途中経過も）。結果（文字起こし・`--show`）は標準出力

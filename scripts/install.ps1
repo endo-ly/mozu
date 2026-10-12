@@ -2,14 +2,23 @@
 # コードを直したら、これを実行し直す。
 #   pwsh scripts\install.ps1            # 確認（check.ps1）→ ビルド → 入れ替え → 起動
 #   pwsh scripts\install.ps1 -SkipCheck # 確認を飛ばす
+#   pwsh scripts\install.ps1 -InstallSpeech # speech.cpp がなければ、尋ねずに入れる
+#   pwsh scripts\install.ps1 -SkipSpeech    # speech.cpp は入れない（尋ねない）
 #Requires -Version 7
-param([switch]$SkipCheck)
+param([switch]$SkipCheck, [switch]$InstallSpeech, [switch]$SkipSpeech)
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
 $root = Split-Path $PSScriptRoot -Parent
 $bin = Join-Path $root 'bin'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+
+# 終了コードが 0 以外でも止まらずに、成功したかどうかを返す
+function Test-Command([scriptblock]$command) {
+    $PSNativeCommandUseErrorActionPreference = $false
+    & $command *> $null
+    return $LASTEXITCODE -eq 0
+}
 
 # 動いているものに終了の合図を送り、終わるのを待つ（トレイのアイコンを片付けさせるため）
 function Stop-Resident([string]$name) {
@@ -72,8 +81,42 @@ try {
         Write-Host "PATH に $bin を足しました（新しく開いたターミナルから mozu が使えます）"
     }
 
+    # speech.cpp が動いておらず、入ってもいなければ、入れるか尋ねる
+    $mozu = Join-Path $bin 'mozu.exe'
+    $managed = $false
+    if (-not (Test-Command { & $mozu health } )) {
+        $hasSpeech = (Test-Path (Join-Path $env:APPDATA 'mozu\speech\bin\speech.exe')) -or (Get-Command speech.exe -ErrorAction SilentlyContinue)
+        if ($hasSpeech) {
+            Write-Host 'speech.cpp は入っていますが、応答がありません。動かし方は README の「speech.cpp」を見てください' -ForegroundColor Yellow
+        }
+        elseif ($SkipSpeech) {
+            Write-Host 'speech.cpp を入れていません（-SkipSpeech）' -ForegroundColor Yellow
+        }
+        else {
+            $answer = if ($InstallSpeech) { 'y' }
+            elseif ([Console]::IsInputRedirected) { 'n' }
+            else { Read-Host 'speech.cpp（音声認識・合成のエンジン。本体約 30MB + モデル約 4.3GB）を入れますか？ [Y/n]' }
+            if ($answer -in '', 'y', 'Y') {
+                & (Join-Path $PSScriptRoot 'setup-speech.ps1') -EnableManaged
+                $managed = $true
+            }
+            else {
+                Write-Host '後で入れるときは: pwsh scripts\setup-speech.ps1 -EnableManaged'
+            }
+        }
+    }
+
     Start-Process (Join-Path $bin 'mozu-tray.exe') -WorkingDirectory $root
     Write-Host "起動しました: $(Join-Path $bin 'mozu-tray.exe')" -ForegroundColor Green
+
+    # mozu-tray が speech.cpp を起動するときは、応答するまで待ってから診断する
+    if ($managed) {
+        Write-Host 'speech.cpp の起動を待っています…'
+        for ($i = 0; $i -lt 60 -and -not (Test-Command { & $mozu health }); $i++) { Start-Sleep 1 }
+    }
+    Write-Host '== mozu doctor' -ForegroundColor Cyan
+    $PSNativeCommandUseErrorActionPreference = $false # 直すべき項目があっても、インストールは成功とする
+    & $mozu doctor
     if (-not (Get-ItemProperty $runKey -Name 'mozu-tray' -ErrorAction SilentlyContinue)) {
         Write-Host '初回は、タスクトレイのアイコンを右クリックして「ログオン時に起動」にチェックを入れてください'
     }

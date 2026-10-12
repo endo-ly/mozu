@@ -1,5 +1,7 @@
 //! `mozu` — speech.cpp を使う道具のコマンド。スクリプトや Claude Code のフックから呼ぶ。
 
+mod doctor;
+
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -75,6 +77,8 @@ enum Command {
     Devices,
     /// speech.cpp が動いているか確かめる
     Health,
+    /// 動かすのに必要なものがそろっているか調べ、足りないものの直し方を示す
+    Doctor,
 }
 
 fn main() -> ExitCode {
@@ -105,6 +109,14 @@ fn main() -> ExitCode {
 fn run(command: Command) -> anyhow::Result<()> {
     if let Err(e) = mozu_config::load_dotenv() {
         tracing::warn!(".env を読めません: {e:#}");
+    }
+    // 診断は、設定が壊れていても動く（壊れていること自体を知らせる）
+    if matches!(command, Command::Doctor) {
+        return if doctor::run() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("直すべき項目があります"))
+        };
     }
     let config = mozu_config::load()?;
     let client = Client::new(
@@ -189,6 +201,7 @@ fn run(command: Command) -> anyhow::Result<()> {
             client.health()?;
             println!("OK ({})", client.base_url());
         }
+        Command::Doctor => unreachable!("上で処理済み"),
     }
     Ok(())
 }

@@ -16,6 +16,7 @@ use serde::Deserialize;
 /// 初回に書き出す設定ファイル。値は `Config::default()` と一致させる（テストで確認）。
 const CONFIG_TEMPLATE: &str = r#"# mozu の設定（mozu-tray と mozu コマンドで共有）。変更したら mozu-tray を起動し直す。
 # speech.cpp の接続先は、ここではなく mozu の .env（MOZU_SPEECHCPP_URL）で指定する
+# 診断は `mozu doctor`
 
 # speech.cpp の応答を待つ上限（秒）
 request_timeout_secs = 120
@@ -24,8 +25,9 @@ request_timeout_secs = 120
 sounds = true
 
 [speech]
-# 読み上げの声（lyre / musa / sui）。一覧は `mozu voices`
-voice = "lyre"
+# 読み上げの声。一覧は `mozu voices`。"none" は声の指定なし。
+# 声を足すには、%APPDATA%\mozu\voices\ に参照音声（.wav）か声のファイル（.voice.gguf）を置く（[server] managed のとき）
+voice = "none"
 
 # 話す速さ。値と実際の速さは比例しない（1.0 で遅め、1.4 で普通）
 speed = 1.4
@@ -36,6 +38,27 @@ output_device = ""
 # 文と文の間、段落と段落の間（ミリ秒）
 sentence_pause_ms = 200
 paragraph_pause_ms = 450
+
+[server]
+# true にすると、mozu-tray が speech.cpp（speech serve）を自分で起動し、終了するときに止める。
+# すでに応答があれば起動しない（Windows サービスなどで動かしているなら false のままでよい）。
+# `pwsh scripts\setup-speech.ps1` で speech.cpp を入れると true になる
+managed = false
+
+# speech.exe の場所。空なら %APPDATA%\mozu\speech\bin\ → PATH の順に探す
+exe = ""
+
+# モデルの置き場所（SPEECH_MODEL_DIR）。空なら、mozu が入れた speech.cpp は %APPDATA%\mozu\speech\models、それ以外は speech.cpp の既定
+model_dir = ""
+
+# 起動するモデル（合成・認識・検出を 1 つずつ）。初めて使うときに自動で取得される
+models = ["irodori-tts-mf", "qwen3-asr-1.7b", "silero-vad"]
+
+# 動かす先。auto（最初の GPU、なければ CPU）/ gpu / cpu
+device = "auto"
+
+# 声の置き場。空なら %APPDATA%\mozu\voices
+voices_dir = ""
 
 [dictation]
 # 認識する言語。"auto" でサーバー側の自動判定
@@ -76,6 +99,7 @@ pub struct Config {
     pub request_timeout_secs: u64,
     pub sounds: bool,
     pub speech: SpeechConfig,
+    pub server: ServerConfig,
     pub dictation: DictationConfig,
 }
 
@@ -87,6 +111,17 @@ pub struct SpeechConfig {
     pub output_device: String,
     pub sentence_pause_ms: u64,
     pub paragraph_pause_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ServerConfig {
+    pub managed: bool,
+    pub exe: String,
+    pub model_dir: String,
+    pub models: Vec<String>,
+    pub device: String,
+    pub voices_dir: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -107,6 +142,7 @@ impl Default for Config {
             request_timeout_secs: 120,
             sounds: true,
             speech: SpeechConfig::default(),
+            server: ServerConfig::default(),
             dictation: DictationConfig::default(),
         }
     }
@@ -115,11 +151,26 @@ impl Default for Config {
 impl Default for SpeechConfig {
     fn default() -> Self {
         Self {
-            voice: "lyre".into(),
+            voice: "none".into(),
             speed: 1.4,
             output_device: String::new(),
             sentence_pause_ms: 200,
             paragraph_pause_ms: 450,
+        }
+    }
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            managed: false,
+            exe: String::new(),
+            model_dir: String::new(),
+            models: ["irodori-tts-mf", "qwen3-asr-1.7b", "silero-vad"]
+                .map(String::from)
+                .to_vec(),
+            device: "auto".into(),
+            voices_dir: String::new(),
         }
     }
 }
