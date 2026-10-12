@@ -673,6 +673,7 @@ dependencies = [
  "mozu-audio",
  "mozu-config",
  "mozu-speak",
+ "png",
  "speechcpp-client",
  "tracing",
  "tracing-appender",

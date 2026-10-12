@@ -1,6 +1,6 @@
-//! タスクトレイのアイコンとメニュー。アイコンの色で今の状態を見せる。
+//! タスクトレイのアイコンとメニュー。鳥の絵に付く丸で今の状態を見せる。
 //!
-//! 白: 待機中 / 赤: 録音中 / 黄: 認識中 / 青: 読み上げ中 / 灰: speech.cpp につながらない
+//! 丸なし: 待機中 / 赤: 録音中 / 黄: 認識中 / 青: 読み上げ中 / 鳥が灰色: speech.cpp につながらない
 
 use std::path::{Path, PathBuf};
 
@@ -181,29 +181,104 @@ pub fn open(path: &Path) {
     }
 }
 
-/// 32×32 の丸いアイコンを描く。
+/// トレイに出す大きさ。Windows が画面の拡大率に合わせて縮める。
+const SIZE: usize = 64;
+
+/// 鳥の絵（256×256 の RGBA）。最初に使うときに読み込む。
+fn bird() -> &'static [u8] {
+    static BIRD: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    BIRD.get_or_init(|| {
+        let decoder = png::Decoder::new(std::io::Cursor::new(include_bytes!("../assets/icon.png")));
+        let mut reader = decoder.read_info().expect("icon.png を読めません");
+        let mut buf = vec![
+            0;
+            reader
+                .output_buffer_size()
+                .expect("icon.png が大きすぎます")
+        ];
+        let info = reader.next_frame(&mut buf).expect("icon.png を読めません");
+        assert_eq!(
+            (info.width, info.height),
+            (256, 256),
+            "icon.png は 256×256 にする"
+        );
+        assert_eq!(
+            info.color_type,
+            png::ColorType::Rgba,
+            "icon.png は RGBA にする"
+        );
+        buf
+    })
+}
+
+fn average(sum: [u32; 3], alpha: u32) -> Option<[u8; 3]> {
+    Some([
+        sum[0].checked_div(alpha)? as u8,
+        sum[1].checked_div(alpha)? as u8,
+        sum[2].checked_div(alpha)? as u8,
+    ])
+}
+
+/// 鳥のアイコンを作る。つながらないときは灰色に、録音・認識・読み上げ中は右下に色の丸を付ける。
 fn icon(activity: Activity, speaking: bool, server: Option<bool>) -> anyhow::Result<Icon> {
-    const SIZE: u32 = 32;
-    let fill: [u8; 3] = match (activity, server) {
-        (Activity::Recording, _) => [0xE5, 0x39, 0x35],
-        (Activity::Busy, _) => [0xFF, 0xB3, 0x00],
-        (Activity::Idle, Some(false)) => [0x8A, 0x8A, 0x8A],
-        (Activity::Idle, _) if speaking => [0x42, 0xA5, 0xF5],
-        (Activity::Idle, _) => [0xF2, 0xF2, 0xF2],
-    };
-    let outline = [0x20, 0x20, 0x20];
-    let center = (SIZE as f32 - 1.0) / 2.0;
-    let radius = SIZE as f32 / 2.0 - 1.5;
-    let mut rgba = Vec::with_capacity((SIZE * SIZE * 4) as usize);
+    let src = bird();
+    let scale = 256 / SIZE;
+    let offline = server == Some(false) && activity == Activity::Idle;
+    let mut rgba = vec![0u8; SIZE * SIZE * 4];
+    // 縮める。透明な画素が色を濁らせないよう、不透明度で重みを付けて平均する
     for y in 0..SIZE {
         for x in 0..SIZE {
-            let d = ((x as f32 - center).powi(2) + (y as f32 - center).powi(2)).sqrt();
-            // 縁を 1px なめらかにする
-            let alpha = (radius + 0.5 - d).clamp(0.0, 1.0);
-            let color = if d > radius - 2.5 { outline } else { fill };
-            rgba.extend_from_slice(&color);
-            rgba.push((alpha * 255.0) as u8);
+            let (mut sum, mut alpha) = ([0u32; 3], 0u32);
+            for dy in 0..scale {
+                for dx in 0..scale {
+                    let p = ((y * scale + dy) * 256 + x * scale + dx) * 4;
+                    let a = u32::from(src[p + 3]);
+                    for c in 0..3 {
+                        sum[c] += u32::from(src[p + c]) * a;
+                    }
+                    alpha += a;
+                }
+            }
+            let out = (y * SIZE + x) * 4;
+            // 完全に透明な画素（alpha == 0）は色を付けない
+            if let Some(color) = average(sum, alpha) {
+                let mut color = color;
+                if offline {
+                    let gray =
+                        (u32::from(color[0]) * 3 + u32::from(color[1]) * 6 + u32::from(color[2]))
+                            / 10;
+                    color = [(gray / 2) as u8 + 0x50; 3];
+                }
+                rgba[out..out + 3].copy_from_slice(&color);
+            }
+            rgba[out + 3] = (alpha / (scale * scale) as u32) as u8;
         }
     }
-    Ok(Icon::from_rgba(rgba, SIZE, SIZE)?)
+
+    let badge: Option<[u8; 3]> = match (activity, speaking) {
+        (Activity::Recording, _) => Some([0xE5, 0x39, 0x35]),
+        (Activity::Busy, _) => Some([0xFF, 0xB3, 0x00]),
+        (Activity::Idle, true) => Some([0x42, 0xA5, 0xF5]),
+        (Activity::Idle, false) => None,
+    };
+    if let Some(fill) = badge {
+        let radius = SIZE as f32 * 0.24;
+        let (cx, cy) = (SIZE as f32 - radius - 1.0, SIZE as f32 - radius - 1.0);
+        for y in 0..SIZE {
+            for x in 0..SIZE {
+                let d = ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt();
+                let cover = (radius + 0.5 - d).clamp(0.0, 1.0);
+                if cover > 0.0 {
+                    let color = if d > radius - 3.0 { [0xFF; 3] } else { fill };
+                    let out = (y * SIZE + x) * 4;
+                    for c in 0..3 {
+                        let old = f32::from(rgba[out + c]);
+                        rgba[out + c] = (old + (f32::from(color[c]) - old) * cover) as u8;
+                    }
+                    rgba[out + 3] = rgba[out + 3].max((cover * 255.0) as u8);
+                }
+            }
+        }
+    }
+    Ok(Icon::from_rgba(rgba, SIZE as u32, SIZE as u32)?)
 }
