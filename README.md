@@ -11,7 +11,7 @@ Windows のタスクトレイに常駐する。
 | **Ctrl+Win**（押している間） | 録音し、離すと文字にして、前面のアプリの入力欄に貼り付ける |
 | **Ctrl+Win+Alt** | 選択中の文を読み上げる。読み上げ中にもう一度押すと止まる |
 
-- アイコンの色が状態を表す（白: 待機 / 赤: 録音 / 黄: 認識 / 青: 読み上げ / 灰: speech.cpp につながらない）
+- 鳥のアイコンの右下の丸が状態を表す（なし: 待機 / 赤: 録音 / 黄: 認識 / 青: 読み上げ）。鳥が灰色のときは speech.cpp につながっていない
 - 英単語はカタカナにしてから読む（読み方の辞書は追加できる）。Markdown の記号や URL は読まない
 - クリップボードは使ったあと元に戻し、履歴やクラウド同期に残さない
 
@@ -49,7 +49,7 @@ pwsh scripts\install.ps1        # 確認 → ビルド → bin\ に置く（PATH
 | 形 | 設定 | 内容 |
 |---|---|---|
 | **mozu-tray に任せる** | `[server] managed = true` | 応答がなければ mozu-tray が `speech serve` を起動し、終了するとき（異常終了でも）一緒に止める。すでに応答があれば起動しない |
-| 自分で動かす | `managed = false`（既定） | Windows サービスや手動で動かしておく。つながらないときはアイコンが灰色になるだけ |
+| 自分で動かす | `managed = false`（既定） | Windows サービスや手動で動かしておく。つながらないときは鳥が灰色になるだけ |
 
 - `pwsh scripts\setup-speech.ps1 -EnableManaged` で、speech.cpp（Windows 用 Vulkan 版、約 30MB）とモデル（約 4.3GB）を `%APPDATA%\mozu\speech` に入れ、`managed = true` にする。`install.ps1` が尋ねて実行するのもこれ
 - 動かしている間、GPU のメモリを約 4.4GB 使う。ほかの GPU の作業と同時に動かすときは注意
@@ -60,7 +60,7 @@ pwsh scripts\install.ps1        # 確認 → ビルド → bin\ に置く（PATH
 `%APPDATA%\mozu\` にある（初回に説明付きで作られる。トレイのメニューからも開ける）。
 
 - `config.toml` — 声・速さ・出力デバイス、音声入力の言語・マイクなど
-- `readings.toml` — 読み方の辞書（例: `Zebra = "ゼブラ"`）
+- `readings.toml` — 読み方の辞書（例: `Zebra = "ゼブラ"`）。初回は [`readings.example.toml`](readings.example.toml)（約 200 語）がコピーされ、以後は自分で管理する
 - `logs\` — ログ（`speech.log` は mozu-tray が起動した speech.cpp の出力）
 - `speech\` — `setup-speech.ps1` が入れた speech.cpp とモデル
 - `voices\` — 声の置き場

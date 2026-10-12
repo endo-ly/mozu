@@ -33,6 +33,7 @@ pub struct SpeakOptions {
     pub paragraph_pause: Duration,
 }
 
+#[derive(Clone)]
 pub struct Speaker {
     client: Client,
     readings: Readings,
@@ -53,6 +54,11 @@ impl Speaker {
             readings,
             options,
         }
+    }
+
+    /// 読み方の辞書を差し替える。
+    pub fn set_readings(&mut self, readings: Readings) {
+        self.readings = readings;
     }
 
     /// 読み上げる文の並びにする（合成はしない）。

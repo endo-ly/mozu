@@ -13,7 +13,7 @@ use crate::sound::{self, Cue};
 use crate::ui::UiHandle;
 
 pub struct Reader {
-    speaker: Arc<Speaker>,
+    speaker: Speaker,
     output_device: String,
     ui: UiHandle,
     running: Option<Running>,
@@ -27,7 +27,7 @@ struct Running {
 impl Reader {
     pub fn new(speaker: Speaker, output_device: String, ui: UiHandle) -> Self {
         Self {
-            speaker: Arc::new(speaker),
+            speaker,
             output_device,
             ui,
             running: None,
@@ -43,7 +43,12 @@ impl Reader {
         }
 
         let stop = Arc::new(AtomicBool::new(false));
-        let speaker = Arc::clone(&self.speaker);
+        // 辞書を足したらすぐ効くよう、読み上げるたびに読み直す（読めなければ前の辞書のまま）
+        let mut speaker = self.speaker.clone();
+        match mozu_config::load_readings() {
+            Ok(readings) => speaker.set_readings(readings),
+            Err(e) => tracing::warn!("{e:#}。前の辞書で読み上げます"),
+        }
         let output_device = self.output_device.clone();
         let ui = self.ui;
         let stop_flag = Arc::clone(&stop);

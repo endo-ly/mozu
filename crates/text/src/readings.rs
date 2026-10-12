@@ -8,8 +8,6 @@
 
 use std::collections::HashMap;
 
-const DEFAULT: &str = include_str!("readings.default.toml");
-
 /// 大文字だけの語を 1 文字ずつ読むときの上限。
 const ACRONYM_MAX: usize = 6;
 
@@ -57,46 +55,22 @@ pub struct Converted {
     pub unknown: Vec<String>,
 }
 
-impl Default for Readings {
-    fn default() -> Self {
-        Self::builtin()
-    }
-}
-
 impl Readings {
-    /// 組み込みの辞書だけ。
-    pub fn builtin() -> Self {
-        let mut readings = Self {
-            words: HashMap::new(),
-            phrases: Vec::new(),
-        };
-        readings
-            .merge_toml(DEFAULT)
-            .expect("組み込みの辞書は正しい TOML");
-        readings
-    }
-
-    /// 組み込みの辞書に、利用者の辞書（`見出し = "読み"` の TOML）を重ねる。利用者の方が優先。
-    pub fn with_user(toml_text: &str) -> Result<Self, toml::de::Error> {
-        let mut readings = Self::builtin();
-        readings.merge_toml(toml_text)?;
-        Ok(readings)
-    }
-
-    fn merge_toml(&mut self, toml_text: &str) -> Result<(), toml::de::Error> {
+    /// 辞書（`見出し = "読み"` の TOML）から作る。
+    pub fn from_toml(toml_text: &str) -> Result<Self, toml::de::Error> {
         let table: HashMap<String, String> = toml::from_str(toml_text)?;
+        let mut words = HashMap::new();
+        let mut phrases = Vec::new();
         for (key, value) in table {
             let key = key.trim().to_ascii_lowercase();
             if key.contains(' ') {
-                self.phrases.retain(|(k, _)| *k != key);
-                self.phrases.push((key, value));
+                phrases.push((key, value));
             } else {
-                self.words.insert(key, value);
+                words.insert(key, value);
             }
         }
-        self.phrases
-            .sort_by_key(|(k, _)| std::cmp::Reverse(k.len()));
-        Ok(())
+        phrases.sort_by_key(|(k, _)| std::cmp::Reverse(k.len()));
+        Ok(Self { words, phrases })
     }
 
     pub fn apply(&self, text: &str) -> Converted {
@@ -281,8 +255,13 @@ fn camel_parts(alpha: &str) -> Vec<&str> {
 mod tests {
     use super::*;
 
+    /// 配布している例の辞書（`readings.example.toml`）を使う。
+    fn example() -> Readings {
+        Readings::from_toml(include_str!("../../../readings.example.toml")).unwrap()
+    }
+
     fn read(text: &str) -> String {
-        Readings::builtin().apply(text).text
+        example().apply(text).text
     }
 
     #[test]
@@ -313,18 +292,20 @@ mod tests {
 
     #[test]
     fn unknown_words_are_reported() {
-        let converted = Readings::builtin().apply("Zebra と zebra と GitHub");
+        let converted = example().apply("Zebra と zebra と GitHub");
         assert_eq!(converted.text, "Zebra と zebra と ギットハブ");
         assert_eq!(converted.unknown, ["Zebra", "zebra"]);
     }
 
     #[test]
-    fn user_dictionary_overrides() {
+    fn dictionary_is_only_what_is_given() {
         let readings =
-            Readings::with_user("github = \"ギットハブさん\"\n\"zebra crossing\" = \"横断歩道\"")
+            Readings::from_toml("github = \"ギットハブさん\"\n\"zebra crossing\" = \"横断歩道\"")
                 .unwrap();
         assert_eq!(readings.apply("GitHub").text, "ギットハブさん");
         assert_eq!(readings.apply("zebra crossing").text, "横断歩道");
+        // 辞書に書いていない語は英語のまま
+        assert_eq!(readings.apply("PowerShell").unknown, ["PowerShell"]);
     }
 
     #[test]

@@ -83,15 +83,8 @@ paste_restore_delay_ms = 300
 keep_last_wav = false
 "#;
 
-const READINGS_TEMPLATE: &str = r#"# 読み方の辞書。読み上げのとき、英単語をここの読みに置き換える（Irodori-TTS は英語が苦手なため）。
-# 組み込みの辞書（GitHub、PowerShell など約 200 語）より、ここに書いたものが優先される。
-# 大文字小文字は区別しない。複数語や記号を含む見出しは "" で囲む。
-# 辞書にない語は `mozu say --show "文章"` で確かめられる（「辞書にない語」として出る）。
-#
-# 例:
-# Zebra = "ゼブラ"
-# "pull request" = "プルリク"
-"#;
+/// 初回に %APPDATA%\mozu\readings.toml へコピーする、配布用の読み方の辞書（リポジトリ直下の readings.example.toml）。
+const READINGS_TEMPLATE: &str = include_str!("../../../readings.example.toml");
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -219,11 +212,11 @@ pub fn load() -> anyhow::Result<Config> {
         .with_context(|| format!("設定ファイルの書き方が違います: {}", path.display()))
 }
 
-/// 読み方の辞書（組み込み + 利用者の辞書）を読む。
+/// 読み方の辞書を読む。なければ、配布用の例（`readings.example.toml`）をコピーして作る。
 pub fn load_readings() -> anyhow::Result<Readings> {
     let path = readings_path()?;
     let text = read_or_create(&path, READINGS_TEMPLATE)?;
-    Readings::with_user(&text)
+    Readings::from_toml(&text)
         .with_context(|| format!("読み方の辞書の書き方が違います: {}", path.display()))
 }
 
@@ -273,6 +266,6 @@ mod tests {
 
     #[test]
     fn readings_template_is_valid() {
-        Readings::with_user(READINGS_TEMPLATE).unwrap();
+        Readings::from_toml(READINGS_TEMPLATE).unwrap();
     }
 }
