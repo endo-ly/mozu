@@ -77,9 +77,9 @@ apps/tray/                 mozu-tray（常駐）
 apps/cli/                  mozu（コマンド）
 crates/speechcpp-client/   speech.cpp の HTTP API クライアント
 crates/config/             設定・読み方の辞書
-crates/text/               読み上げ前の下ごしらえ（Markdown の除去・カタカナ化・文の区切り）
+crates/text/               読み上げ前の下ごしらえ（Markdown の除去・カタカナ化）
 crates/audio/              録音・再生
-crates/speak/              読み上げ（合成と再生を並行）
+crates/speak/              読み上げ（speech.cpp が合成した文から順に再生）
 crates/server/             speech.cpp の起動・管理（managed のとき）
 scripts/                   check.ps1（fmt / clippy / test）、install.ps1、setup-speech.ps1
 docs/manual-test.md        手で確かめる項目

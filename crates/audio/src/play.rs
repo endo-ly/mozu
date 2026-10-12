@@ -53,12 +53,6 @@ impl Player {
         self.lock().extend(samples);
     }
 
-    /// 無音を積む（文と文の間など）。
-    pub fn push_silence(&self, duration: Duration) {
-        let n = (duration.as_secs_f64() * self.sample_rate as f64) as usize;
-        self.lock().extend(std::iter::repeat_n(0.0, n));
-    }
-
     /// まだ鳴らしていない音を捨てる。
     pub fn clear(&self) {
         self.lock().clear();

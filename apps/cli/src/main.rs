@@ -138,8 +138,6 @@ fn run(command: Command) -> anyhow::Result<()> {
                 voice: voice.unwrap_or_else(|| config.speech.voice.clone()),
                 speed: speed.unwrap_or(config.speech.speed),
                 seed,
-                sentence_pause: Duration::from_millis(config.speech.sentence_pause_ms),
-                paragraph_pause: Duration::from_millis(config.speech.paragraph_pause_ms),
             };
             let speaker = Speaker::new(client, mozu_config::load_readings()?, options);
             if show {
@@ -224,9 +222,7 @@ fn text_or_stdin(args: &[String]) -> anyhow::Result<String> {
 fn show_prepared(speaker: &Speaker, text: &str) -> anyhow::Result<()> {
     let prepared = speaker.prepare(text);
     let mut out = std::io::stdout().lock();
-    for (i, sentence) in prepared.sentences.iter().enumerate() {
-        writeln!(out, "{:>3}  {}", i + 1, sentence.text)?;
-    }
+    writeln!(out, "{}", prepared.text)?;
     if !prepared.unknown.is_empty() {
         writeln!(out, "\n辞書にない語: {}", prepared.unknown.join(", "))?;
         writeln!(

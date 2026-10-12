@@ -96,8 +96,6 @@ fn run() -> anyhow::Result<()> {
             voice: config.speech.voice.clone(),
             speed: config.speech.speed,
             seed: None,
-            sentence_pause: Duration::from_millis(config.speech.sentence_pause_ms),
-            paragraph_pause: Duration::from_millis(config.speech.paragraph_pause_ms),
         },
     );
 

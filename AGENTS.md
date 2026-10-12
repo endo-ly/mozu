@@ -12,9 +12,9 @@ mozu/
 ├─ crates/
 │  ├─ speechcpp-client/  # speech.cpp の HTTP API（認識・合成・モデル一覧・health）
 │  ├─ config/            # mozu-config — 設定・読み方の辞書・.env の読み込み（tray と cli で共有）
-│  ├─ text/              # mozu-text — 読み上げ前の下ごしらえ（Markdown の除去・カタカナ化・文の区切り）
+│  ├─ text/              # mozu-text — 読み上げ前の下ごしらえ（Markdown の除去・カタカナ化）
 │  ├─ audio/             # mozu-audio — 録音・再生（cpal）、WAV の読み書き
-│  ├─ speak/             # mozu-speak — 読み上げ（下ごしらえ → 文ごとに合成 → 再生、を並行して進める）
+│  ├─ speak/             # mozu-speak — 読み上げ（下ごしらえ → 丸ごと送り、speech.cpp が合成した文から順に再生）
 │  └─ server/            # mozu-server — speech.cpp（speech serve）の探索・起動・停止。managed のときだけ使う
 ├─ scripts/
 │  ├─ check.ps1          # 整形・clippy（警告はエラー）・テスト
@@ -36,7 +36,7 @@ mozu/
 | 場所 | 内容 |
 |---|---|
 | mozu の `.env` | 環境ごとの値。`MOZU_SPEECHCPP_URL`（なければ `http://127.0.0.1:8012`）。ひな形は `.env.example`、Git に入れない。実行ファイルの場所とカレントディレクトリから上へ探す |
-| `%APPDATA%\mozu\config.toml` | 使い方の好み。`[speech]`（声・速さ・出力デバイス・文の間）、`[server]`（speech.cpp を mozu-tray が起動するか・exe・モデル・デバイス・声の置き場）、`[dictation]`（言語・マイク・待ち時間など）。なければ説明付きで作られる。既存のファイルは書き換えない（足りない項目は既定値） |
+| `%APPDATA%\mozu\config.toml` | 使い方の好み。`[speech]`（声・速さ・出力デバイス）、`[server]`（speech.cpp を mozu-tray が起動するか・exe・モデル・デバイス・声の置き場）、`[dictation]`（言語・マイク・待ち時間など）。なければ説明付きで作られる。既存のファイルは書き換えない（足りない項目は既定値） |
 | `%APPDATA%\mozu\speech\` | `setup-speech.ps1` が入れた speech.cpp（`bin\`）とモデル（`models\`）。mozu 自身が入れたものは `SPEECH_MODEL_DIR` をここにして起動する |
 | `%APPDATA%\mozu\voices\` | 声の置き場。`名前.wav` / `名前.voice.gguf` を `--add-voice 名前=ファイル` として渡す（managed のとき） |
 | `%APPDATA%\mozu\readings.toml` | 読み方の辞書（英単語 → カタカナ）。初回に、リポジトリ直下の `readings.example.toml`（配布用の例。自分のプロジェクト名などは入れない）がコピーされ、以後は利用者が管理する（mozu を更新しても書き換えない）。語を足すときは、`mozu say --show` で「辞書にない語」を見つけ、トレイのメニュー「読み方の辞書を開く」で開いて書く |
@@ -58,11 +58,10 @@ cargo test -- --ignored             # speechcpp サービス・マイク・ス�
 ## 読み上げ（mozu-speak / mozu-text）
 
 - **英単語はすべてカタカナにしてから合成する**（Irodori-TTS は英語の読みが崩れる）。順に、複数語の項目（"pull request"）→ 語のかたまりごと（"Node.js"）→ 記号・数字・大文字の切れ目で分けて（"PowerShell" → Power + Shell）→ 大文字だけの 6 文字以下は 1 文字ずつ（"GPU" → ジーピーユー）。それでも読めない語は英語のまま残し、ログと `mozu say --show` で「辞書にない語」として出す。辞書は利用者の `readings.toml`（配布用の例は `readings.example.toml`）
-- Markdown の記号・URL・コードの塊は読まない。句点のない行（見出し・箇条書き）には「。」を補う
-- 1 回の合成は 100 文字まで（speech.cpp は 256 トークンまで）。文末 → 読点 → 文字数の順で区切り、短い文はまとめる
-- 合成した声の前後の無音を切り、文・段落の間は設定の長さで入れ直す
-- 合成と再生は並行（2 文先まで合成しておく）。最初の文ができた時点で話し始める
-- `speed` はサーバー側に既定値がないので、必ず送る（既定 1.4）
+- Markdown の記号・URL・コードの塊は読まない。行の区切りは残す（speech.cpp が改行を文の切れ目として扱う）
+- **文の区切り・間・種は speech.cpp に任せ、mozu では二重に持たない。** 下ごしらえした文章を丸ごと 1 回で送ると、speech.cpp が文ごとに合成し（長すぎる文は読点・空白で切る）、どの文も同じ種で読み、文と文の間を 0.9 秒以上空けてつなぐ（`tools/common/sentences.cpp`）。mozu で足すのは、speech.cpp にできないこと（Markdown の除去・カタカナ化・再生と停止）だけにする
+- 音声は `response_format: "pcm"` で、合成した文から順に受け取って鳴らす。最初の文ができた時点で話し始める。止めるときは接続を切る（speech.cpp は残りの合成をやめる）
+- `speed` は必ず送る（既定 1.4。speech.cpp の既定 1 は遅い）。種はサーバーが選び、`RUST_LOG=debug` でログに出る（`mozu say --seed` で同じ読み方を再現できる）
 
 ## mozu-tray（常駐）
 
@@ -101,7 +100,7 @@ cargo test -- --ignored             # speechcpp サービス・マイク・ス�
 mozu say "文章"                      # 読み上げ（--voice / --speed / --seed）
 mozu say -o out.wav "文章"           # WAV に保存
 Get-Content memo.md | mozu say       # 標準入力から
-mozu say --show "文章"               # 合成せず、読み上げる文と辞書にない語を表示
+mozu say --show "文章"               # 合成せず、読み上げる文章（カタカナにした結果）と辞書にない語を表示
 mozu transcribe memo.m4a             # 文字起こし（WAV 以外は FFmpeg で変換）
 mozu listen                          # マイクで聞いて、話し終わったら文字を出力
 mozu voices / devices / health
