@@ -9,7 +9,7 @@ use windows::Win32::System::Registry::{
 use windows::core::{HSTRING, PCWSTR, w};
 
 const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-const VALUE_NAME: PCWSTR = w!("mozu-dictation");
+const VALUE_NAME: PCWSTR = w!("mozu-tray");
 
 /// 登録するコマンド（今動いている実行ファイルのパス）。
 fn command() -> anyhow::Result<String> {

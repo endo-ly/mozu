@@ -1,7 +1,8 @@
-//! Ctrl+Win の押しっぱなしを検出する低レベルキーボードフック。
+//! Ctrl+Win（音声入力）と Ctrl+Win+Alt（読み上げ）を検出する低レベルキーボードフック。
 //!
 //! `RegisterHotKey` ではキーを離した瞬間が分からないので、`WH_KEYBOARD_LL` で
-//! すべてのキーを見て、Ctrl と Win が両方押されている間を 1 回の録音とする。
+//! すべてのキーを見る。Ctrl と Win が両方押されている間を 1 回の録音とし、
+//! そこに Alt が加わったら（どの順で押しても）読み上げの合図にする。
 //! キーは横取りせず、そのまま流す。フックとそのメッセージループは、メインスレッド（`ui`）で動く。
 
 use std::cell::{Cell, RefCell};
@@ -12,8 +13,8 @@ use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT,
-    KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_LCONTROL, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RWIN,
-    VK_SHIFT,
+    KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY, VK_LCONTROL, VK_LMENU, VK_LWIN, VK_RCONTROL, VK_RMENU,
+    VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, SetWindowsHookExW,
@@ -39,7 +40,7 @@ enum Phase {
     Idle,
     /// 録音中。
     Active,
-    /// ほかのキーが混ざった。Ctrl と Win を両方離すまで何もしない。
+    /// 読み上げを合図した後か、ほかのキーが混ざった。Ctrl と Win を両方離すまで何もしない。
     Blocked,
 }
 
@@ -49,6 +50,8 @@ struct Chord {
     rctrl: bool,
     lwin: bool,
     rwin: bool,
+    lalt: bool,
+    ralt: bool,
     phase: Phase,
 }
 
@@ -57,6 +60,8 @@ enum Output {
     Pressed,
     Released,
     Cancelled,
+    /// Ctrl+Win+Alt。録音中なら、その録音は取り消す。
+    Read,
 }
 
 impl Chord {
@@ -68,9 +73,13 @@ impl Chord {
         self.lwin || self.rwin
     }
 
+    fn alt(&self) -> bool {
+        self.lalt || self.ralt
+    }
+
     /// キー 1 回分の変化を受けて、状態を進める。
-    /// `other_modifier_down` は Shift / Alt が押されているか（Ctrl+Shift+Win などを除くため）。
-    fn on_key(&mut self, vk: VIRTUAL_KEY, down: bool, other_modifier_down: bool) -> Option<Output> {
+    /// `shift_down` は Shift が押されているか（Ctrl+Shift+Win などを除くため）。
+    fn on_key(&mut self, vk: VIRTUAL_KEY, down: bool, shift_down: bool) -> Option<Output> {
         let is_chord_key = match vk {
             VK_LCONTROL => {
                 self.lctrl = down;
@@ -88,6 +97,14 @@ impl Chord {
                 self.rwin = down;
                 true
             }
+            VK_LMENU => {
+                self.lalt = down;
+                true
+            }
+            VK_RMENU => {
+                self.ralt = down;
+                true
+            }
             _ => false,
         };
 
@@ -95,12 +112,16 @@ impl Chord {
         let neither = !self.ctrl() && !self.win();
 
         match self.phase {
+            Phase::Idle | Phase::Active if down && both && self.alt() && !shift_down => {
+                self.phase = Phase::Blocked;
+                Some(Output::Read)
+            }
             Phase::Idle if down && !is_chord_key && (self.ctrl() || self.win()) => {
                 // Ctrl+C や Win+E の途中。続けて Ctrl+Win になっても録音しない
                 self.phase = Phase::Blocked;
                 None
             }
-            Phase::Idle if both && !other_modifier_down => {
+            Phase::Idle if both && !self.alt() && !shift_down => {
                 self.phase = Phase::Active;
                 Some(Output::Pressed)
             }
@@ -122,7 +143,7 @@ impl Chord {
     }
 }
 
-/// 4 つのキーの実際の状態（`GetAsyncKeyState`）。
+/// Ctrl と Win の実際の状態（`GetAsyncKeyState`）。
 #[derive(Debug, Default, Clone, Copy)]
 struct Physical {
     lctrl: bool,
@@ -151,6 +172,10 @@ impl Chord {
         self.lwin = physical.lwin;
         self.rwin = physical.rwin;
         let neither = !self.ctrl() && !self.win();
+        if neither {
+            self.lalt = false;
+            self.ralt = false;
+        }
         match self.phase {
             Phase::Active if !(self.ctrl() && self.win()) => {
                 self.phase = if neither { Phase::Idle } else { Phase::Blocked };
@@ -213,6 +238,7 @@ fn emit(output: Output) {
             Output::Pressed => Event::HotkeyPressed,
             Output::Released => Event::HotkeyReleased,
             Output::Cancelled => Event::HotkeyCancelled,
+            Output::Read => Event::ReadPressed,
         });
     }
 }
@@ -230,9 +256,9 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             };
             if let Some(down) = down {
                 let vk = VIRTUAL_KEY(info.vkCode as u16);
-                let output = CHORD.with_borrow_mut(|c| c.on_key(vk, down, other_modifier_down()));
+                let output = CHORD.with_borrow_mut(|c| c.on_key(vk, down, shift_down()));
                 if let Some(output) = output {
-                    if output == Output::Pressed {
+                    if matches!(output, Output::Pressed | Output::Read) {
                         mask_start_menu();
                     }
                     emit(output);
@@ -243,9 +269,9 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }
 
-fn other_modifier_down() -> bool {
+fn shift_down() -> bool {
     // フックの中でも、今処理中のキーより前の状態は GetAsyncKeyState に反映されている
-    unsafe { GetAsyncKeyState(VK_SHIFT.0.into()) < 0 || GetAsyncKeyState(VK_MENU.0.into()) < 0 }
+    unsafe { GetAsyncKeyState(VK_SHIFT.0.into()) < 0 }
 }
 
 fn mask_start_menu() {
@@ -373,6 +399,55 @@ mod tests {
         };
         assert_eq!(c.resync(held), None);
         assert_eq!(c.phase, Phase::Active);
+    }
+
+    #[test]
+    fn ctrl_win_alt_reads_in_any_order() {
+        let mut c = Chord::default();
+        let out = feed(
+            &mut c,
+            &[(VK_LMENU, true), (VK_LCONTROL, true), (VK_LWIN, true)],
+        );
+        assert_eq!(out, [Output::Read]);
+        // 離すまで、録音も読み上げも始まらない
+        let out = feed(
+            &mut c,
+            &[(VK_LMENU, false), (VK_LMENU, true), (VK_LWIN, false)],
+        );
+        assert!(out.is_empty());
+        let out = feed(&mut c, &[(VK_LCONTROL, false), (VK_LMENU, false)]);
+        assert!(out.is_empty());
+        assert_eq!(c.phase, Phase::Idle);
+    }
+
+    #[test]
+    fn alt_after_ctrl_win_switches_to_read() {
+        let mut c = Chord::default();
+        let out = feed(
+            &mut c,
+            &[
+                (VK_LCONTROL, true),
+                (VK_LWIN, true),
+                (VK_RMENU, true),
+                (VK_LWIN, false),
+            ],
+        );
+        assert_eq!(out, [Output::Pressed, Output::Read]);
+    }
+
+    #[test]
+    fn ctrl_alt_then_other_key_is_not_read() {
+        let mut c = Chord::default();
+        let out = feed(
+            &mut c,
+            &[
+                (VK_LCONTROL, true),
+                (VK_LMENU, true),
+                (VK_C, true),
+                (VK_LWIN, true),
+            ],
+        );
+        assert!(out.is_empty());
     }
 
     #[test]

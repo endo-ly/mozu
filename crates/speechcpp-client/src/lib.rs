@@ -76,6 +76,23 @@ impl SpeechRequest {
     }
 }
 
+/// `GET /v1/models` の 1 項目。
+#[derive(Debug, Clone)]
+pub struct ModelInfo {
+    pub id: String,
+    /// `synthesis`（合成）/ `recognition`（認識）/ `detection`（発話の検出）
+    pub task: String,
+    /// 合成モデルの声。`none`（参照音声なし）も含む。
+    pub voices: Vec<VoiceInfo>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoiceInfo {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Client {
     base_url: String,
@@ -137,6 +154,47 @@ impl Client {
         let parsed: Transcription =
             serde_json::from_str(&text).map_err(|e| Error::Decode(e.to_string()))?;
         Ok(parsed.text)
+    }
+
+    /// `GET /v1/models`。サーバーが載せているモデルと、合成モデルの声の一覧。
+    pub fn models(&self) -> Result<Vec<ModelInfo>> {
+        let mut res = self
+            .agent
+            .get(format!("{}/v1/models", self.base_url))
+            .call()?;
+        check_status(&mut res)?;
+
+        #[derive(Deserialize)]
+        struct List {
+            data: Vec<Entry>,
+        }
+        #[derive(Deserialize)]
+        struct Entry {
+            id: String,
+            #[serde(default)]
+            speech: Option<Detail>,
+        }
+        #[derive(Deserialize)]
+        struct Detail {
+            #[serde(default)]
+            task: String,
+            #[serde(default)]
+            voices: Vec<VoiceInfo>,
+        }
+        let text = res.body_mut().read_to_string()?;
+        let list: List = serde_json::from_str(&text).map_err(|e| Error::Decode(e.to_string()))?;
+        Ok(list
+            .data
+            .into_iter()
+            .map(|e| {
+                let (task, voices) = e.speech.map(|d| (d.task, d.voices)).unwrap_or_default();
+                ModelInfo {
+                    id: e.id,
+                    task,
+                    voices,
+                }
+            })
+            .collect())
     }
 
     /// 文章を音声にして、音声ファイルの中身（既定は WAV）を返す。

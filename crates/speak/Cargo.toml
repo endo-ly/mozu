@@ -1,0 +1,15 @@
+[package]
+name = "mozu-speak"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+speechcpp-client = { workspace = true }
+mozu-audio = { workspace = true }
+mozu-text = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

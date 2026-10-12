@@ -1,5 +1,13 @@
 [workspace]
-members = ["crates/speechcpp-client", "apps/dictation"]
+members = [
+  "crates/speechcpp-client",
+  "crates/config",
+  "crates/text",
+  "crates/audio",
+  "crates/speak",
+  "apps/tray",
+  "apps/cli",
+]
 resolver = "3"
 
 [workspace.package]
@@ -9,9 +17,14 @@ publish = false
 
 [workspace.dependencies]
 speechcpp-client = { path = "crates/speechcpp-client" }
+mozu-config = { path = "crates/config" }
+mozu-text = { path = "crates/text" }
+mozu-audio = { path = "crates/audio" }
+mozu-speak = { path = "crates/speak" }
 anyhow = "1.0.104"
 dotenvy = "0.15.7"
 arboard = { version = "3.6.1", default-features = false }
+clap = { version = "4.6.7", features = ["derive"] }
 cpal = "0.18.2"
 hound = "3.5.1"
 serde = { version = "1.0.229", features = ["derive"] }

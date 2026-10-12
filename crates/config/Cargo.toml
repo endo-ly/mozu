@@ -1,0 +1,15 @@
+[package]
+name = "mozu-config"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+dotenvy = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+mozu-text = { workspace = true }
+
+[lints]
+workspace = true
