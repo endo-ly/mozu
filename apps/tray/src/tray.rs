@@ -1,11 +1,11 @@
 //! タスクトレイのアイコンとメニュー。鳥の絵に付く丸で今の状態を見せる。
 //!
-//! 丸なし: 待機中 / 赤: 録音中 / 黄: 認識中 / 青: 読み上げ中 / 鳥が灰色: speech.cpp につながらない
+//! 丸なし: 待機中 / 赤: 録音中 / 黄: 認識中 / 青: 読み上げ中 / 鳥が灰色: speech.cpp につながらない（手動で止めているときも灰色）
 
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
@@ -20,6 +20,19 @@ pub enum Activity {
     Busy,
 }
 
+/// speech.cpp との接続の状態。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerState {
+    /// まだ確かめていない。
+    Checking,
+    /// つながっている。
+    Up,
+    /// つながらない。
+    Down,
+    /// managed の speech.cpp を、トレイのメニューで止めている。
+    Stopped,
+}
+
 /// メニューで選ばれた操作。
 ///
 /// ShellExecute などはメッセージを処理することがあるので、トレイを借りたまま実行せず、
@@ -28,6 +41,10 @@ pub enum Action {
     /// チェックが切り替わった後の状態。
     SetAutostart(bool),
     Open(PathBuf),
+    /// managed の speech.cpp を止める。
+    StopServer,
+    /// 手動で止めた speech.cpp を起動する。
+    StartServer,
     Quit,
 }
 
@@ -41,6 +58,8 @@ pub struct Paths {
 pub struct Tray {
     icon: TrayIcon,
     status: MenuItem,
+    /// managed のときだけある。「speech.cpp を止める／起動する」
+    server_toggle: Option<MenuItem>,
     autostart: CheckMenuItem,
     open_config: MenuItem,
     open_readings: MenuItem,
@@ -49,29 +68,32 @@ pub struct Tray {
     paths: Paths,
     activity: Activity,
     speaking: bool,
-    /// `None` はまだ確かめていない。
-    server: Option<bool>,
+    server: ServerState,
 }
 
 impl Tray {
-    pub fn new(paths: Paths) -> anyhow::Result<Self> {
+    pub fn new(paths: Paths, managed: bool) -> anyhow::Result<Self> {
         let status = MenuItem::new("", false, None);
+        let server_toggle = managed.then(|| MenuItem::new("speech.cpp を止める", false, None));
         let autostart = CheckMenuItem::new("ログオン時に起動", true, autostart::is_enabled(), None);
         let open_config = MenuItem::new("設定ファイルを開く", true, None);
         let open_readings = MenuItem::new("読み方の辞書を開く", true, None);
         let open_logs = MenuItem::new("ログのフォルダを開く", true, None);
         let quit = MenuItem::new("終了", true, None);
         let menu = Menu::new();
-        menu.append_items(&[
-            &status,
-            &PredefinedMenuItem::separator(),
-            &autostart,
-            &open_config,
-            &open_readings,
-            &open_logs,
-            &PredefinedMenuItem::separator(),
-            &quit,
-        ])?;
+        let top = PredefinedMenuItem::separator();
+        let bottom = PredefinedMenuItem::separator();
+        let mut items: Vec<&dyn IsMenuItem> = vec![&status, &top];
+        if let Some(item) = &server_toggle {
+            items.push(item);
+        }
+        items.push(&autostart);
+        items.push(&open_config);
+        items.push(&open_readings);
+        items.push(&open_logs);
+        items.push(&bottom);
+        items.push(&quit);
+        menu.append_items(&items)?;
 
         let icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
@@ -82,6 +104,7 @@ impl Tray {
         let tray = Self {
             icon,
             status,
+            server_toggle,
             autostart,
             open_config,
             open_readings,
@@ -90,7 +113,7 @@ impl Tray {
             paths,
             activity: Activity::Idle,
             speaking: false,
-            server: None,
+            server: ServerState::Checking,
         };
         tray.refresh();
         Ok(tray)
@@ -110,9 +133,21 @@ impl Tray {
         }
     }
 
-    pub fn set_server(&mut self, ok: bool) {
-        if self.server != Some(ok) {
-            self.server = Some(ok);
+    pub fn set_server(&mut self, state: ServerState) {
+        if self.server != state {
+            self.server = state;
+            match (&self.server_toggle, state) {
+                (Some(item), ServerState::Checking) => item.set_enabled(false),
+                (Some(item), ServerState::Stopped) => {
+                    item.set_text("speech.cpp を起動する");
+                    item.set_enabled(true);
+                }
+                (Some(item), _) => {
+                    item.set_text("speech.cpp を止める");
+                    item.set_enabled(true);
+                }
+                (None, _) => {}
+            }
             self.refresh();
         }
     }
@@ -128,6 +163,17 @@ impl Tray {
             Some(Action::Open(self.paths.readings.clone()))
         } else if id == self.open_logs.id() {
             Some(Action::Open(self.paths.logs.clone()))
+        } else if self
+            .server_toggle
+            .as_ref()
+            .is_some_and(|item| id == item.id())
+        {
+            // 止まっているときは「起動する」、それ以外は「止める」
+            Some(if self.server == ServerState::Stopped {
+                Action::StartServer
+            } else {
+                Action::StopServer
+            })
         } else if id == self.quit.id() {
             Some(Action::Quit)
         } else {
@@ -148,14 +194,20 @@ impl Tray {
             Activity::Busy => "認識中",
         };
         let server = match self.server {
-            None => "speech.cpp を確認中",
-            Some(true) => "speech.cpp 接続中",
-            Some(false) => "speech.cpp につながりません",
+            ServerState::Checking => "speech.cpp を確認中",
+            ServerState::Up => "speech.cpp 接続中",
+            ServerState::Down => "speech.cpp につながらない",
+            ServerState::Stopped => "speech.cpp を止めています",
         };
         let text = format!("{activity}（{server}）");
         self.status.set_text(&text);
         let _ = self.icon.set_tooltip(Some(format!("mozu — {text}")));
-        match icon(self.activity, self.speaking, self.server) {
+        let reachable = match self.server {
+            ServerState::Up => Some(true),
+            ServerState::Checking => None,
+            ServerState::Down | ServerState::Stopped => Some(false),
+        };
+        match icon(self.activity, self.speaking, reachable) {
             Ok(icon) => {
                 let _ = self.icon.set_icon(Some(icon));
             }
