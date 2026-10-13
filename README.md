@@ -1,6 +1,6 @@
 # mozu
 
-ローカルの音声認識・音声合成を使う道具集。エンジンは [speech.cpp](https://github.com/nyosegawa/speech.cpp)（Qwen3-ASR / Irodori-TTS）。音声は `127.0.0.1` の speech.cpp にだけ送り、録音は保存しない。
+ローカルの音声認識・音声合成を使う道具集。エンジンは [speech.cpp](https://github.com/nyosegawa/speech.cpp)（Qwen3-ASR / Irodori-TTS）。接続先は mozu の `.env`（`MOZU_SPEECHCPP_URL`、既定は `127.0.0.1`）で決め、録音は保存しない。
 
 ## mozu-tray（常駐）
 
@@ -52,8 +52,21 @@ pwsh scripts\install.ps1        # 確認 → ビルド → bin\ に置く（PATH
 | 自分で動かす | `managed = false`（既定） | Windows サービスや手動で動かしておく。つながらないときは鳥が灰色になるだけ |
 
 - `pwsh scripts\setup-speech.ps1 -EnableManaged` で、speech.cpp（Windows 用 Vulkan 版、約 30MB）とモデル（約 4.3GB）を `%APPDATA%\mozu\speech` に入れ、`managed = true` にする。`install.ps1` が尋ねて実行するのもこれ
-- 動かしている間、GPU のメモリを約 4.4GB 使う。ほかの GPU の作業と同時に動かすときは注意
-- 声は `%APPDATA%\mozu\voices\` に参照音声（`名前.wav`）か声のファイル（`名前.voice.gguf`）を置くと、`managed` のとき一緒に読み込む（既定の声は `none`）
+- 動かしている間、GPU のメモリを約 4.4GB 使う。ほかの GPU の作業と同時に動かすときは注意。トレイのメニューで「speech.cpp を止める」と、使っていない間のメモリを解放できる（「speech.cpp を起動する」で戻る。managed のときだけ出る）
+- 起動や短時間での終了が続くときは、再起動を 30 秒 → 1 分 → 2 分と間隔を空けて試し、それでも続くようなら通知を出す。通知をクリックするとログのフォルダが開く
+- 声は `%APPDATA%\mozu\voices\` に参照音声（`名前.wav`）か声のファイル（`名前.voice.gguf`）を置くと、`managed` のとき一緒に読み込む（既定の声は `none`）。Windows サービスで動かしているときの声の足し方は [docs/voices.md](docs/voices.md)
+
+### 別の PC の speech.cpp を使う
+
+mozu の `.env` に接続先を書くと、別の PC（や同じ PC の別ポート）で動いている speech.cpp を使える。
+
+```
+MOZU_SPEECHCPP_URL=http://192.168.1.20:8012
+```
+
+- 設定の `[server] managed` は `false`（既定）のままにする。managed は自分の PC（`127.0.0.1`）の接続先にだけ使える
+- このとき音声はネットワークを流れる。録音は保存しない方針は変わらないが、行き先がローカルでなくなる点には注意
+- つながらないときは、接続先の PC で speech.cpp が動いているか、`mozu health` や `mozu doctor` で確かめる
 
 ## 設定
 
@@ -81,8 +94,9 @@ crates/text/               読み上げ前の下ごしらえ（Markdown の除�
 crates/audio/              録音・再生
 crates/speak/              読み上げ（speech.cpp が合成した文から順に再生）
 crates/server/             speech.cpp の起動・管理（managed のとき）
-scripts/                   check.ps1（fmt / clippy / test）、install.ps1、setup-speech.ps1
+scripts/                   check.ps1（fmt / clippy / test）、install.ps1、setup-speech.ps1、add-voice.ps1
 docs/manual-test.md        手で確かめる項目
+docs/voices.md             声を足す手順
 ```
 
 開発の決まりや仕組みの詳細は [AGENTS.md](AGENTS.md)。
