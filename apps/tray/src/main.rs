@@ -11,15 +11,15 @@ mod autostart;
 mod hotkey;
 mod insert;
 mod reader;
+mod server_watch;
 mod sound;
 mod tray;
 mod ui;
 
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use mozu_server::{Managed, Spec};
+use mozu_server::Spec;
 use mozu_speak::{SpeakOptions, Speaker};
 use speechcpp_client::Client;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
@@ -35,26 +35,6 @@ use windows::core::{HSTRING, w};
 
 /// これを立てると、動いている mozu-tray が終わる（`scripts\install.ps1` が使う）。
 const QUIT_EVENT: windows::core::PCWSTR = w!(r"Local\mozu-tray-quit");
-
-/// speech.cpp の状態を確かめる間隔。
-const HEALTH_INTERVAL: Duration = Duration::from_secs(30);
-/// 再起動の待ち時間の基本。失敗が続くと倍々に伸ばす（上限 `RETRY_MAX`）。
-const RETRY_BASE: Duration = HEALTH_INTERVAL;
-const RETRY_MAX: Duration = Duration::from_secs(600);
-/// このより短い時間で終わったら「起動に失敗した」と数える
-/// （モデルの読み込みに時間がかかって正常に動いていたときは、数えない）。
-const QUICK_DEATH: Duration = Duration::from_secs(60);
-/// 起動の失敗がこの回数続いたら、通知する。
-const NOTIFY_AFTER: u32 = 3;
-
-/// トレイのメニューからの、speech.cpp の停止・起動の合図。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Control {
-    /// managed の speech.cpp を手で止める。
-    Stop,
-    /// 手で止めた speech.cpp を起動する。
-    Start,
-}
 
 fn main() {
     if let Err(e) = run() {
@@ -102,10 +82,7 @@ fn run() -> anyhow::Result<()> {
     }
     sound::init(config.sounds);
 
-    let client = Client::new(
-        speechcpp_client::base_url_from_env(),
-        config.request_timeout(),
-    );
+    let client = Client::from_env(config.request_timeout());
     let speaker = Speaker::new(
         client.clone(),
         mozu_config::load_readings()?,
@@ -143,7 +120,7 @@ fn run() -> anyhow::Result<()> {
     } else {
         None
     };
-    spawn_health_watch(client, ui, spec, control_rx);
+    server_watch::spawn(client, ui, spec, control_rx);
     spawn_quit_watch(ui)?;
     std::thread::spawn(move || app.run(rx));
 
@@ -152,168 +129,6 @@ fn run() -> anyhow::Result<()> {
     ui::run(ui, tray, logs, control_tx)?;
     tracing::info!("終了しました");
     Ok(())
-}
-
-/// speech.cpp の `/health` を定期的に確かめて、トレイのアイコンに反映する。
-///
-/// `spec` があるとき（`[server] managed = true`）だけ、応答がなければ speech.cpp を起動する。
-/// 起動や短時間での終了が続くときは、再起動の間隔を倍々に空け、失敗が続いたら通知する。
-/// トレイのメニューからの `Control` で、手動の停止・起動を受け付ける。
-/// 送り手が消えたら（トレイが終わったら）戻り、`Managed` を捨てて speech.cpp も止める。
-fn spawn_health_watch(
-    client: speechcpp_client::Client,
-    ui: ui::UiHandle,
-    spec: Option<Spec>,
-    control: mpsc::Receiver<Control>,
-) {
-    std::thread::spawn(move || {
-        let mut managed: Option<Managed> = None;
-        // いちばん最近 speech.cpp を起動した時刻（終了が「短時間だったか」の判定用）
-        let mut started_at: Option<Instant> = None;
-        let mut stopped = false;
-        let mut failures: u32 = 0;
-        let mut next_try = Instant::now();
-        let mut notified = false;
-        let mut last: Option<tray::ServerState> = None;
-        loop {
-            if stopped {
-                report(&ui, &mut last, tray::ServerState::Stopped);
-                // 起動の合図を待つ
-                match control.recv() {
-                    Ok(Control::Start) => {
-                        tracing::info!("speech.cpp を起動します");
-                        stopped = false;
-                        failures = 0;
-                        notified = false;
-                        next_try = Instant::now();
-                    }
-                    // 止まっている最中の「止める」は、そのまま無視
-                    Ok(Control::Stop) => {}
-                    // 送り手が消えた（トレイが終わった）。Managed を捨てると speech.cpp も止まる
-                    Err(_) => return,
-                }
-                continue;
-            }
-
-            let mut health = client.health();
-            if health.is_err()
-                && let Some(spec) = &spec
-            {
-                if let Some(status) = managed.as_mut().and_then(Managed::exited) {
-                    let quick = started_at.is_some_and(|at| at.elapsed() < QUICK_DEATH);
-                    tracing::warn!("speech.cpp が終了しました ({status})");
-                    managed = None;
-                    failures = if quick { failures + 1 } else { 0 };
-                }
-                if managed.is_none() && Instant::now() >= next_try {
-                    report(&ui, &mut last, tray::ServerState::Down);
-                    match Managed::start(spec) {
-                        Ok(child) => {
-                            started_at = Some(Instant::now());
-                            match wait_until_ready(&client, managed.insert(child), &control) {
-                                Wait::Ready(result) => {
-                                    health = result;
-                                    if health.is_ok() {
-                                        failures = 0;
-                                        notified = false;
-                                    }
-                                }
-                                // 待っている間に「止める」が来た。managed を捨てて止める
-                                Wait::Stopped => {
-                                    stopped = true;
-                                    managed = None;
-                                    continue;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            failures += 1;
-                            tracing::error!("{e:#}");
-                        }
-                    }
-                    if failures > 0 {
-                        next_try = Instant::now() + retry_delay(failures);
-                        if failures >= NOTIFY_AFTER && !notified {
-                            notified = true;
-                            ui.notify();
-                        }
-                    }
-                }
-            }
-            if health.is_ok() {
-                failures = 0;
-                notified = false;
-            }
-            let state = if health.is_ok() {
-                tray::ServerState::Up
-            } else {
-                tray::ServerState::Down
-            };
-            if last != Some(state) {
-                match &health {
-                    Ok(()) => tracing::info!("speech.cpp に接続しました ({})", client.base_url()),
-                    Err(e) => tracing::warn!("{e}"),
-                }
-            }
-            report(&ui, &mut last, state);
-
-            // 待つ。メニューからの合図が来たら、確認の間隔を待たずに反応する
-            match control.recv_timeout(HEALTH_INTERVAL) {
-                Ok(Control::Stop) => {
-                    stopped = true;
-                    managed = None;
-                }
-                Ok(Control::Start) => {}
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => return,
-            }
-        }
-    });
-}
-
-/// 失敗が続いたときの、次の起動までの待ち時間（30 秒 → 1 分 → 2 分 … 上限 10 分）。
-fn retry_delay(failures: u32) -> Duration {
-    let step = failures.saturating_sub(1).min(5);
-    (RETRY_BASE * (1 << step)).min(RETRY_MAX)
-}
-
-/// 状態をトレイに送る。同じ状態の送り直しは飛ばす。
-fn report(ui: &ui::UiHandle, last: &mut Option<tray::ServerState>, state: tray::ServerState) {
-    if *last != Some(state) {
-        *last = Some(state);
-        ui.server(state);
-    }
-}
-
-/// `wait_until_ready` の結果。
-enum Wait {
-    /// 確認が終わった（speech.cpp の応答の結果）。
-    Ready(Result<(), speechcpp_client::Error>),
-    /// 待っている間に「止める」の合図が来た。
-    Stopped,
-}
-
-/// 起動した speech.cpp が応答するまで待つ（モデルの読み込みに数秒かかる）。
-/// 初めてモデルを取得するときは長くかかるので、待ちきれなければ次の確認に回す。
-fn wait_until_ready(
-    client: &speechcpp_client::Client,
-    server: &mut Managed,
-    control: &mpsc::Receiver<Control>,
-) -> Wait {
-    const LIMIT: Duration = Duration::from_secs(120);
-    let started = Instant::now();
-    loop {
-        let result = client.health();
-        if result.is_ok() || server.exited().is_some() || started.elapsed() > LIMIT {
-            return Wait::Ready(result);
-        }
-        match control.recv_timeout(Duration::from_secs(1)) {
-            Ok(Control::Stop) => return Wait::Stopped,
-            Ok(Control::Start) => {}
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => return Wait::Ready(client.health()),
-        }
-    }
 }
 
 /// 終了の合図（名前付きイベント）を待つ。

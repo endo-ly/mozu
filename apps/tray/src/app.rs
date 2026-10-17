@@ -72,10 +72,9 @@ impl App {
         ui: UiHandle,
         reader: Reader,
     ) -> Self {
-        let non_empty = |s: &str| (!s.is_empty()).then(|| s.to_owned());
         let options = TranscribeOptions {
-            language: non_empty(&config.language),
-            prompt: non_empty(&config.prompt),
+            language: Some(config.language.clone()),
+            prompt: Some(config.prompt.clone()),
             model: None,
         };
         let last_wav = config.keep_last_wav.then_some(last_wav);

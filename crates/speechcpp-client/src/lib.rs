@@ -1,26 +1,18 @@
 //! speech.cpp (`speech serve`) の OpenAI 互換 HTTP API を呼ぶ同期クライアント。
 //!
 //! mozu のアプリはすべてこのクレートを通して speech.cpp を使う。
-//! サーバーの起動・停止はしない（Windows サービス `speechcpp` が常駐している）。
+//! サーバーの起動・停止はしない（managed のときは `mozu-server` が行う）。
 
 use std::io::Read;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-/// サービス `speechcpp` の既定の待ち受け先。
+/// 接続先の既定。
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8012";
 
 /// 接続先を指定する環境変数（`.env` から読み込む想定）。
 pub const BASE_URL_ENV: &str = "MOZU_SPEECHCPP_URL";
-
-/// 環境変数 `MOZU_SPEECHCPP_URL` の値。なければ（空なら）既定の待ち受け先。
-pub fn base_url_from_env() -> String {
-    std::env::var(BASE_URL_ENV)
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_BASE_URL.to_owned())
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -37,7 +29,7 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// `POST /v1/audio/transcriptions` のオプション。
+/// `POST /v1/audio/transcriptions` のオプション。空文字は `None` と同じ（送らない）。
 #[derive(Debug, Clone, Default)]
 pub struct TranscribeOptions {
     /// 例: `ja`。`None` ならサーバー側の自動判定。
@@ -106,8 +98,10 @@ impl SpeechStream {
             if !bytes.is_empty() {
                 return Ok(Some(
                     bytes
-                        .chunks_exact(2)
-                        .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|&b| i16::from_le_bytes(b) as f32 / 32768.0)
                         .collect(),
                 ));
             }
@@ -151,6 +145,15 @@ impl Client {
             agent,
             timeout,
         }
+    }
+
+    /// 接続先を環境変数 `MOZU_SPEECHCPP_URL` にして作る。なければ（空なら）既定の接続先。
+    pub fn from_env(timeout: Duration) -> Self {
+        let base_url = std::env::var(BASE_URL_ENV)
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_BASE_URL.to_owned());
+        Self::new(base_url, timeout)
     }
 
     pub fn base_url(&self) -> &str {

@@ -7,7 +7,6 @@ publish.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 arboard = { workspace = true }
-hound = { workspace = true }
 mozu-audio = { workspace = true }
 mozu-config = { workspace = true }
 mozu-server = { workspace = true }

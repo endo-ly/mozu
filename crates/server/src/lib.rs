@@ -23,12 +23,12 @@ use windows::core::PCWSTR;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// mozu が speech.cpp を入れる場所（`scripts\setup-speech.ps1` と同じ）。`%APPDATA%\mozu\speech`
-pub fn install_dir() -> anyhow::Result<PathBuf> {
+fn install_dir() -> anyhow::Result<PathBuf> {
     Ok(mozu_config::data_dir()?.join("speech"))
 }
 
 /// 声の既定の置き場。`%APPDATA%\mozu\voices`
-pub fn default_voices_dir() -> anyhow::Result<PathBuf> {
+fn default_voices_dir() -> anyhow::Result<PathBuf> {
     Ok(mozu_config::data_dir()?.join("voices"))
 }
 
@@ -98,6 +98,15 @@ impl Spec {
         Self::build(config, base_url, exe, &voices_dir, model_dir, log)
     }
 
+    /// 起動するコマンドの全体（ログと診断用）。
+    pub fn command_line(&self) -> String {
+        std::iter::once(self.exe.as_os_str())
+            .chain(self.args.iter().map(OsString::as_os_str))
+            .map(OsStr::to_string_lossy)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     fn build(
         config: &ServerConfig,
         base_url: &str,
@@ -152,7 +161,7 @@ fn host_port(base_url: &str) -> anyhow::Result<(String, u16)> {
 
 /// 声の置き場にあるファイルを、（声の名前, ファイル）にする。
 /// `lyre.voice.gguf` も `lyre.wav` も、名前は `lyre`。
-pub fn voices(dir: &Path) -> Vec<(String, PathBuf)> {
+fn voices(dir: &Path) -> Vec<(String, PathBuf)> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -212,15 +221,8 @@ impl Managed {
                 return Err(e.context("speech.cpp を mozu-tray に結び付けられません"));
             }
         };
-        tracing::info!(
-            "speech.cpp を起動しました: {} {}",
-            spec.exe.display(),
-            spec.args
-                .iter()
-                .map(|a| a.to_string_lossy())
-                .collect::<Vec<_>>()
-                .join(" ")
-        );
+        tracing::info!("speech.cpp を起動しました: {}", spec.command_line());
+
         Ok(Self { child, _job: job })
     }
 
@@ -271,15 +273,6 @@ impl Drop for Job {
     fn drop(&mut self) {
         let _ = unsafe { CloseHandle(self.0) };
     }
-}
-
-/// 起動の引数を見やすく表す（診断用）。
-pub fn describe(spec: &Spec) -> String {
-    let quote = |s: &OsStr| s.to_string_lossy().into_owned();
-    std::iter::once(quote(spec.exe.as_os_str()))
-        .chain(spec.args.iter().map(|a| quote(a)))
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 #[cfg(test)]
@@ -347,11 +340,11 @@ mod tests {
                 "127.0.0.1",
                 "--port",
                 "8099",
+                "--device",
+                "cpu",
             ]
-            .iter()
-            .chain(&["--device", "cpu"])
             .map(OsString::from)
-            .collect(),
+            .to_vec(),
             model_dir: None,
             log: std::env::temp_dir().join("mozu-server-real-test.log"),
         };

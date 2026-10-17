@@ -13,30 +13,31 @@ use windows::core::{HSTRING, w};
 
 use crate::autostart;
 
+/// 値は、ほかのスレッドから `ui` へメッセージで送るときに使う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Activity {
-    Idle,
-    Recording,
-    Busy,
+    Idle = 0,
+    Recording = 1,
+    Busy = 2,
 }
 
-/// speech.cpp との接続の状態。
+/// speech.cpp との接続の状態。値は `Activity` と同じく、メッセージで送るときに使う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerState {
     /// まだ確かめていない。
-    Checking,
+    Checking = 0,
     /// つながっている。
-    Up,
+    Up = 1,
     /// つながらない。
-    Down,
+    Down = 2,
     /// managed の speech.cpp を、トレイのメニューで止めている。
-    Stopped,
+    Stopped = 3,
 }
 
 /// メニューで選ばれた操作。
 ///
 /// ShellExecute などはメッセージを処理することがあるので、トレイを借りたまま実行せず、
-/// 呼び出し側で借用を終えてから `perform` する。
+/// 呼び出し側（`ui`）で借用を終えてから行う。
 pub enum Action {
     /// チェックが切り替わった後の状態。
     SetAutostart(bool),

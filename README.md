@@ -1,102 +1,64 @@
 # mozu
 
-ローカルの音声認識・音声合成を使う道具集。エンジンは [speech.cpp](https://github.com/nyosegawa/speech.cpp)（Qwen3-ASR / Irodori-TTS）。接続先は mozu の `.env`（`MOZU_SPEECHCPP_URL`、既定は `127.0.0.1`）で決め、録音は保存しない。
+Windows で使う音声入力と読み上げ。認識と合成はローカルの [speech.cpp](https://github.com/nyosegawa/speech.cpp)（Qwen3-ASR / Irodori-TTS）が行い、録音は保存しない。
 
 ## mozu-tray（常駐）
 
-Windows のタスクトレイに常駐する。
-
 | ホットキー | 動作 |
 |---|---|
-| **Ctrl+Win**（押している間） | 録音し、離すと文字にして、前面のアプリの入力欄に貼り付ける |
+| **Ctrl+Win**（押している間） | 録音し、離すと文字にして、前面のアプリに貼り付ける |
 | **Ctrl+Win+Alt** | 選択中の文を読み上げる。読み上げ中にもう一度押すと止まる |
 
-- 鳥のアイコンの右下の丸が状態を表す（なし: 待機 / 赤: 録音 / 黄: 認識 / 青: 読み上げ）。鳥が灰色のときは speech.cpp につながっていない
-- 英単語はカタカナにしてから読む（読み方の辞書は追加できる）。Markdown の記号や URL は読まない
-- クリップボードは使ったあと元に戻し、履歴やクラウド同期に残さない
+鳥のアイコンの右下の丸が状態を表す（なし: 待機 / 赤: 録音 / 黄: 認識 / 青: 読み上げ）。鳥が灰色なら speech.cpp につながっていない。
 
 ## mozu（コマンド）
 
 ```powershell
-mozu say "読み上げる文章"            # -o out.wav で保存、--voice / --speed で声と速さ
-Get-Content memo.md | mozu say       # 標準入力から
-mozu say --show "文章"               # 読み方（カタカナにした結果）と辞書にない語を確かめる
-mozu transcribe memo.m4a             # 音声ファイルを文字に
-mozu listen                          # マイクで聞いて、話し終わったら文字を出力
+mozu say "文章"                  # 読み上げ（-o out.wav で保存、--voice / --speed / --seed）
+Get-Content memo.md | mozu say   # 標準入力から
+mozu say --show "文章"           # 読み方（カタカナにした結果）と辞書にない語を表示
+mozu transcribe memo.m4a         # 文字起こし（WAV 以外は FFmpeg で変換）
+mozu listen                      # マイクで聞いて、話し終わったら文字を出力
 mozu voices / devices / health
-mozu doctor                          # 必要なものがそろっているか調べ、足りないものの直し方を示す
+mozu doctor                      # 必要なものがそろっているか調べ、直し方を示す
 ```
-
-## 必要なもの
-
-- Windows 10 / 11、Rust（stable）
-- speech.cpp（`install.ps1` が、なければ入れるか尋ねる。→ [speech.cpp](#speechcpp)）
-- `mozu transcribe` で WAV 以外を使うときは FFmpeg
 
 ## インストール
 
+Windows 10 / 11 と Rust（stable）が要る。`mozu transcribe` で WAV 以外を使うなら FFmpeg も。
+
 ```powershell
-copy .env.example .env          # 接続先を変えるときは MOZU_SPEECHCPP_URL を書き換える
-pwsh scripts\install.ps1        # 確認 → ビルド → bin\ に置く（PATH に追加）→ mozu-tray を起動 → 診断
+pwsh scripts\install.ps1
 ```
 
-起動したら、トレイのアイコンを右クリックして「ログオン時に起動」にチェックを入れる。更新するときも `install.ps1` を実行し直す。
+ビルドして `bin\` に置き（PATH に足す）、mozu-tray を起動して `mozu doctor` を実行する。speech.cpp がなければ、入れるか尋ねる。更新するときも同じ。初回は、トレイのアイコンを右クリックして「ログオン時に起動」にチェックを入れる。
 
-## speech.cpp
+## speech.cpp の動かし方
 
-認識と合成は speech.cpp（`speech serve`）がやる。mozu-tray は、次のどちらの形でも使える。
-
-| 形 | 設定 | 内容 |
+| 形 | 設定（`config.toml`） | 内容 |
 |---|---|---|
-| **mozu-tray に任せる** | `[server] managed = true` | 応答がなければ mozu-tray が `speech serve` を起動し、終了するとき（異常終了でも）一緒に止める。すでに応答があれば起動しない |
-| 自分で動かす | `managed = false`（既定） | Windows サービスや手動で動かしておく。つながらないときは鳥が灰色になるだけ |
+| 自分で動かす | `[server] managed = false`（既定） | Windows サービスや手動で動かしておく |
+| mozu-tray に任せる | `[server] managed = true` | 応答がなければ mozu-tray が起動し、mozu-tray が終わると一緒に止まる |
 
-- `pwsh scripts\setup-speech.ps1 -EnableManaged` で、speech.cpp（Windows 用 Vulkan 版、約 30MB）とモデル（約 4.3GB）を `%APPDATA%\mozu\speech` に入れ、`managed = true` にする。`install.ps1` が尋ねて実行するのもこれ
-- 動かしている間、GPU のメモリを約 4.4GB 使う。ほかの GPU の作業と同時に動かすときは注意。トレイのメニューで「speech.cpp を止める」と、使っていない間のメモリを解放できる（「speech.cpp を起動する」で戻る。managed のときだけ出る）
-- 起動や短時間での終了が続くときは、再起動を 30 秒 → 1 分 → 2 分と間隔を空けて試し、それでも続くようなら通知を出す。通知をクリックするとログのフォルダが開く
-- 声は `%APPDATA%\mozu\voices\` に参照音声（`名前.wav`）か声のファイル（`名前.voice.gguf`）を置くと、`managed` のとき一緒に読み込む（既定の声は `none`）。Windows サービスで動かしているときの声の足し方は [docs/voices.md](docs/voices.md)
-
-### 別の PC の speech.cpp を使う
-
-mozu の `.env` に接続先を書くと、別の PC（や同じ PC の別ポート）で動いている speech.cpp を使える。
-
-```
-MOZU_SPEECHCPP_URL=http://192.168.1.20:8012
-```
-
-- 設定の `[server] managed` は `false`（既定）のままにする。managed は自分の PC（`127.0.0.1`）の接続先にだけ使える
-- このとき音声はネットワークを流れる。録音は保存しない方針は変わらないが、行き先がローカルでなくなる点には注意
-- つながらないときは、接続先の PC で speech.cpp が動いているか、`mozu health` や `mozu doctor` で確かめる
+- `pwsh scripts\setup-speech.ps1 -EnableManaged` で、speech.cpp とモデル（約 4.3GB）を `%APPDATA%\mozu\speech` に入れ、`managed = true` にする（`install.ps1` が尋ねるのもこれ）
+- managed のときは、トレイのメニューで speech.cpp を止められる（使っていない間に GPU のメモリ約 4.4GB を空けたいとき）
+- 別の PC の speech.cpp を使うときは、mozu の `.env` に `MOZU_SPEECHCPP_URL=http://192.168.1.20:8012` のように書く（managed は使えない）
 
 ## 設定
 
-`%APPDATA%\mozu\` にある（初回に説明付きで作られる。トレイのメニューからも開ける）。
+`%APPDATA%\mozu\` にある。設定ファイルと辞書は初回に作られ、トレイのメニューから開ける。
 
-- `config.toml` — 声・速さ・出力デバイス、音声入力の言語・マイクなど
-- `readings.toml` — 読み方の辞書（例: `Zebra = "ゼブラ"`）。初回は [`readings.example.toml`](readings.example.toml)（約 200 語）がコピーされ、以後は自分で管理する
-- `logs\` — ログ（`speech.log` は mozu-tray が起動した speech.cpp の出力）
-- `speech\` — `setup-speech.ps1` が入れた speech.cpp とモデル
-- `voices\` — 声の置き場
+| 場所 | 内容 |
+|---|---|
+| `config.toml` | 声・速さ・出力デバイス、音声入力の言語・マイク、speech.cpp の起動（`[server]`） |
+| `readings.toml` | 読み方の辞書（例: `Zebra = "ゼブラ"`）。初回は [`readings.example.toml`](readings.example.toml) がコピーされる |
+| `voices\` | 声の置き場（`名前.wav` か `名前.voice.gguf`）。managed のとき読み込む |
+| `logs\` | ログ |
+
+接続先は mozu の `.env`（`MOZU_SPEECHCPP_URL`、既定は `http://127.0.0.1:8012`）で決める。
 
 ## 制限
 
 - 管理者権限で動いているアプリには、貼り付けも選択中の文の取得もできない（Windows の UIPI）
-- 元のクリップボードは、テキストのみ戻す
-
-## 構成
-
-```
-apps/tray/                 mozu-tray（常駐）
-apps/cli/                  mozu（コマンド）
-crates/speechcpp-client/   speech.cpp の HTTP API クライアント
-crates/config/             設定・読み方の辞書
-crates/text/               読み上げ前の下ごしらえ（Markdown の除去・カタカナ化）
-crates/audio/              録音・再生
-crates/speak/              読み上げ（speech.cpp が合成した文から順に再生）
-crates/server/             speech.cpp の起動・管理（managed のとき）
-scripts/                   check.ps1（fmt / clippy / test）、install.ps1、setup-speech.ps1、add-voice.ps1
-docs/manual-test.md        手で確かめる項目
-docs/voices.md             声を足す手順
-```
-
-開発の決まりや仕組みの詳細は [AGENTS.md](AGENTS.md)。
+- 読み上げは Ctrl+C で文を取るので、ターミナルで何も選択していないと「中断」として届く
+- クリップボードは、使ったあとテキストだけ元に戻す（画像などは上書きされる）

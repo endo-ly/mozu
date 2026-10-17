@@ -17,6 +17,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
+/// Ctrl+C を送ってからクリップボードが変わるのを待つ上限。
+const COPY_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// 前面のウィンドウ。録音開始時に覚えておき、貼り付ける前に変わっていないか確かめる。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Target(isize);
@@ -121,9 +124,6 @@ pub fn copy_selection() -> anyhow::Result<Option<String>> {
     }
     Ok(selected)
 }
-
-/// Ctrl+C を送ってからクリップボードが変わるのを待つ上限。
-const COPY_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Ctrl を押しながら `vk` を押す操作を送る。
 fn send_ctrl(vk: VIRTUAL_KEY) {

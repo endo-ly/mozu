@@ -1,4 +1,4 @@
-//! マイクの録音とスピーカーへの再生（cpal / WASAPI）、WAV の読み書き。
+//! マイクの録音とスピーカーへの再生（cpal / WASAPI）、WAV の書き出し。
 //!
 //! 音声はどこでもモノラルの f32（-1.0〜1.0）で扱う。
 
@@ -64,9 +64,7 @@ mod tests {
             recording.seconds()
         );
         let wav = recording.to_wav().unwrap();
-        let (samples, rate) = wav::decode(&wav).unwrap();
-        assert_eq!(rate, recording.sample_rate);
-        assert_eq!(samples.len(), recording.samples.len());
+        assert_eq!(wav.len(), 44 + recording.samples.len() * 2);
     }
 
     /// 既定のスピーカーで 0.3 秒の音を鳴らす。

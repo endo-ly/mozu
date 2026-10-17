@@ -31,7 +31,7 @@ function Stop-Resident([string]$name) {
         $quit.Dispose()
     }
     catch [System.Threading.WaitHandleCannotBeOpenedException] {
-        # 終了の合図に対応する前の版
+        # 合図を受け取れないときは、下で強制終了する
     }
     $running | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
     $left = Get-Process $name -ErrorAction SilentlyContinue
@@ -50,7 +50,6 @@ try {
     cargo build --release -p mozu-tray -p mozu-cli
 
     Stop-Resident 'mozu-tray'
-    Stop-Resident 'mozu-dictation' # 改名前の名前
 
     New-Item -ItemType Directory -Force $bin | Out-Null
     foreach ($exe in 'mozu-tray.exe', 'mozu.exe') {
@@ -61,18 +60,6 @@ try {
         Write-Host '.env を .env.example から作りました'
     }
 
-    # 改名前（mozu-dictation）の片付け。自動起動の登録は新しい名前で引き継ぐ
-    Remove-Item (Join-Path $bin 'mozu-dictation.exe') -ErrorAction SilentlyContinue
-    if (Get-ItemProperty $runKey -Name 'mozu-dictation' -ErrorAction SilentlyContinue) {
-        Remove-ItemProperty $runKey -Name 'mozu-dictation'
-        Set-ItemProperty $runKey -Name 'mozu-tray' -Value ('"{0}"' -f (Join-Path $bin 'mozu-tray.exe'))
-        Write-Host 'ログオン時の起動を mozu-tray に引き継ぎました'
-    }
-    $oldConfig = Join-Path $env:APPDATA 'mozu\dictation.toml'
-    if (Test-Path $oldConfig) {
-        Move-Item $oldConfig "$oldConfig.old" -Force
-        Write-Host "設定は %APPDATA%\mozu\config.toml に変わりました（古い設定は dictation.toml.old）"
-    }
 
     # mozu コマンドをどこからでも使えるよう、bin\ をユーザーの PATH に足す
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -87,7 +74,7 @@ try {
     if (-not (Test-Command { & $mozu health } )) {
         $hasSpeech = (Test-Path (Join-Path $env:APPDATA 'mozu\speech\bin\speech.exe')) -or (Get-Command speech.exe -ErrorAction SilentlyContinue)
         if ($hasSpeech) {
-            Write-Host 'speech.cpp は入っていますが、応答がありません。動かし方は README の「speech.cpp」を見てください' -ForegroundColor Yellow
+            Write-Host 'speech.cpp は入っていますが、応答がありません。動かし方は README の「speech.cpp の動かし方」を見てください' -ForegroundColor Yellow
         }
         elseif ($SkipSpeech) {
             Write-Host 'speech.cpp を入れていません（-SkipSpeech）' -ForegroundColor Yellow

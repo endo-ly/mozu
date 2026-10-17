@@ -69,10 +69,7 @@ pub fn run() -> bool {
         }
     };
 
-    let client = Client::new(
-        speechcpp_client::base_url_from_env(),
-        config.request_timeout(),
-    );
+    let client = Client::from_env(config.request_timeout());
     let server_up = client.health().is_ok();
     checks.extend(check_server(&config, &client, server_up));
     if server_up {
@@ -166,7 +163,7 @@ fn check_server(config: &Config, client: &Client, server_up: bool) -> Vec<Check>
     });
     if config.server.managed && !server_up {
         match mozu_server::Spec::new(&config.server, client.base_url()) {
-            Ok(spec) => checks.push(Check::ok("起動のしかた", mozu_server::describe(&spec))),
+            Ok(spec) => checks.push(Check::ok("起動のしかた", spec.command_line())),
             Err(e) => checks.push(Check::fail(
                 "起動のしかた",
                 format!("{e:#}"),
