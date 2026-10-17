@@ -64,6 +64,27 @@ enum Output {
     Read,
 }
 
+/// Ctrl と Win の実際の状態（`GetAsyncKeyState`）。
+#[derive(Debug, Default, Clone, Copy)]
+struct Physical {
+    lctrl: bool,
+    rctrl: bool,
+    lwin: bool,
+    rwin: bool,
+}
+
+impl Physical {
+    fn read() -> Self {
+        let down = |vk: VIRTUAL_KEY| unsafe { GetAsyncKeyState(vk.0.into()) } < 0;
+        Self {
+            lctrl: down(VK_LCONTROL),
+            rctrl: down(VK_RCONTROL),
+            lwin: down(VK_LWIN),
+            rwin: down(VK_RWIN),
+        }
+    }
+}
+
 impl Chord {
     fn ctrl(&self) -> bool {
         self.lctrl || self.rctrl
@@ -141,30 +162,7 @@ impl Chord {
             _ => None,
         }
     }
-}
 
-/// Ctrl と Win の実際の状態（`GetAsyncKeyState`）。
-#[derive(Debug, Default, Clone, Copy)]
-struct Physical {
-    lctrl: bool,
-    rctrl: bool,
-    lwin: bool,
-    rwin: bool,
-}
-
-impl Physical {
-    fn read() -> Self {
-        let down = |vk: VIRTUAL_KEY| unsafe { GetAsyncKeyState(vk.0.into()) } < 0;
-        Self {
-            lctrl: down(VK_LCONTROL),
-            rctrl: down(VK_RCONTROL),
-            lwin: down(VK_LWIN),
-            rwin: down(VK_RWIN),
-        }
-    }
-}
-
-impl Chord {
     /// フックが取りこぼしたキーの解放を、実際のキーの状態で補う。
     fn resync(&mut self, physical: Physical) -> Option<Output> {
         self.lctrl = physical.lctrl;

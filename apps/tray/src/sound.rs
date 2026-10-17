@@ -1,6 +1,5 @@
 //! 開始・終了・失敗の効果音。起動時に短い WAV を作っておき、PlaySound で非同期に鳴らす。
 
-use std::io::Cursor;
 use std::sync::OnceLock;
 
 use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
@@ -57,26 +56,15 @@ fn tones(notes: &[(f32, f32)]) -> Vec<u8> {
     const RATE: u32 = 44_100;
     const FADE: f32 = 0.005;
     const GAIN: f32 = 0.2;
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: RATE,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-    let mut cursor = Cursor::new(Vec::new());
-    let mut writer = hound::WavWriter::new(&mut cursor, spec).expect("メモリへの書き込み");
+    let mut samples = Vec::new();
     for &(freq, secs) in notes {
         let n = (secs * RATE as f32) as usize;
-        for i in 0..n {
+        samples.extend((0..n).map(|i| {
             let t = i as f32 / RATE as f32;
             // 前後 5ms をなだらかにして、プツッという音を消す
             let envelope = (t / FADE).min((secs - t) / FADE).clamp(0.0, 1.0);
-            let s = (t * freq * std::f32::consts::TAU).sin() * envelope * GAIN;
-            writer
-                .write_sample((s * i16::MAX as f32) as i16)
-                .expect("メモリへの書き込み");
-        }
+            (t * freq * std::f32::consts::TAU).sin() * envelope * GAIN
+        }));
     }
-    writer.finalize().expect("メモリへの書き込み");
-    cursor.into_inner()
+    mozu_audio::wav::encode(&samples, RATE).expect("メモリへの書き込み")
 }

@@ -119,10 +119,7 @@ fn run(command: Command) -> anyhow::Result<()> {
         };
     }
     let config = mozu_config::load()?;
-    let client = Client::new(
-        speechcpp_client::base_url_from_env(),
-        config.request_timeout(),
-    );
+    let client = Client::from_env(config.request_timeout());
 
     match command {
         Command::Say {
@@ -239,10 +236,9 @@ fn transcribe_options(
     language: Option<String>,
     prompt: Option<String>,
 ) -> TranscribeOptions {
-    let non_empty = |s: String| (!s.is_empty()).then_some(s);
     TranscribeOptions {
-        language: non_empty(language.unwrap_or_else(|| config.dictation.language.clone())),
-        prompt: non_empty(prompt.unwrap_or_else(|| config.dictation.prompt.clone())),
+        language: Some(language.unwrap_or_else(|| config.dictation.language.clone())),
+        prompt: Some(prompt.unwrap_or_else(|| config.dictation.prompt.clone())),
         model: None,
     }
 }

@@ -26,8 +26,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::w;
 
+use crate::server_watch::Control;
 use crate::tray::{self, Action, Activity, ServerState, Tray};
-use crate::{Control, autostart, hotkey};
+use crate::{autostart, hotkey};
 
 const WM_APP_ACTIVITY: u32 = WM_APP + 1;
 const WM_APP_SERVER: u32 = WM_APP + 2;
@@ -61,12 +62,7 @@ pub struct UiHandle(isize);
 
 impl UiHandle {
     pub fn activity(self, activity: Activity) {
-        let code = match activity {
-            Activity::Idle => 0,
-            Activity::Recording => 1,
-            Activity::Busy => 2,
-        };
-        self.post(WM_APP_ACTIVITY, code);
+        self.post(WM_APP_ACTIVITY, activity as usize);
     }
 
     pub fn speaking(self, speaking: bool) {
