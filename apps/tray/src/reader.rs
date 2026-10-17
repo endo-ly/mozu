@@ -45,7 +45,7 @@ impl Reader {
         let stop = Arc::new(AtomicBool::new(false));
         // 辞書を足したらすぐ効くよう、読み上げるたびに読み直す（読めなければ前の辞書のまま）
         let mut speaker = self.speaker.clone();
-        match mozu_config::load_readings() {
+        match mozu_speak::load_readings() {
             Ok(readings) => speaker.set_readings(readings),
             Err(e) => tracing::warn!("{e:#}。前の辞書で読み上げます"),
         }

@@ -629,7 +629,6 @@ dependencies = [
  "mozu-config",
  "mozu-server",
  "mozu-speak",
- "mozu-text",
  "speechcpp-client",
  "tracing",
  "tracing-subscriber",
@@ -641,7 +640,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dotenvy",
- "mozu-text",
  "serde",
  "toml",
 ]
@@ -662,16 +660,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "mozu-audio",
- "mozu-text",
+ "mozu-config",
  "speechcpp-client",
- "tracing",
-]
-
-[[package]]
-name = "mozu-text"
-version = "0.1.0"
-dependencies = [
  "toml",
+ "tracing",
 ]
 
 [[package]]

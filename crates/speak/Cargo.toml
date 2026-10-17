@@ -8,7 +8,8 @@ publish.workspace = true
 anyhow = { workspace = true }
 speechcpp-client = { workspace = true }
 mozu-audio = { workspace = true }
-mozu-text = { workspace = true }
+mozu-config = { workspace = true }
+toml = { workspace = true }
 tracing = { workspace = true }
 
 [lints]

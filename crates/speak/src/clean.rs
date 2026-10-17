@@ -4,7 +4,7 @@
 /// - 見出し・箇条書き・引用の記号、強調（`**` `__` `~~`）を消す
 /// - `[文字](URL)` は文字だけ残し、むき出しの URL は消す
 /// - 表の `|` は読点にする
-pub fn clean(text: &str) -> String {
+pub(crate) fn clean(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut in_fence = false;
     for line in text.lines() {

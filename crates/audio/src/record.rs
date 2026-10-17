@@ -33,7 +33,7 @@ impl Recording {
     /// 16bit PCM モノラルの WAV にする。サンプリング周波数はデバイスのまま
     /// （speech.cpp 側で 16kHz に変換される）。
     pub fn to_wav(&self) -> anyhow::Result<Vec<u8>> {
-        crate::wav::encode(&self.samples, self.sample_rate)
+        crate::encode_wav(&self.samples, self.sample_rate)
     }
 }
 

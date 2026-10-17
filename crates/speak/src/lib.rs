@@ -1,16 +1,49 @@
-//! 文章の読み上げ。下ごしらえ（mozu-text）→ 合成（speech.cpp）→ 再生（mozu-audio）。
+//! 文章の読み上げ。下ごしらえ → 合成（speech.cpp）→ 再生（mozu-audio）。
+//!
+//! 下ごしらえは、Markdown の記号・URL・コードの塊を取り除き（`clean`）、英単語をカタカナにする
+//! （`Readings`。Irodori-TTS は英語の読みが崩れるため）。
 //!
 //! 文章は丸ごと 1 回で送る。speech.cpp が文ごとに合成し（どの文も同じ種）、文と文の間を空けて、
 //! できた文から順に返してくるので、届いた分から鳴らす。長い文章でも、最初の文ができた時点で話し始める。
+
+mod clean;
+mod readings;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 use mozu_audio::Player;
-use mozu_text::{Prepared, Readings};
 use speechcpp_client::{Client, SpeechRequest, SpeechStream};
+
+pub use readings::Readings;
+
+/// 初回に %APPDATA%\mozu\readings.toml へコピーする、配布用の読み方の辞書。
+const READINGS_TEMPLATE: &str = include_str!("../../../readings.example.toml");
+
+/// 読み方の辞書（`%APPDATA%\mozu\readings.toml`）を読む。なければ、配布用の例をコピーして作る。
+pub fn load_readings() -> anyhow::Result<Readings> {
+    let path = mozu_config::readings_path()?;
+    let text = mozu_config::read_or_create(&path, READINGS_TEMPLATE)?;
+    Readings::from_toml(&text)
+        .with_context(|| format!("読み方の辞書の書き方が違います: {}", path.display()))
+}
+
+/// 読み上げ用に整えた文章。`unknown` は辞書になくて英語のまま残った単語。
+#[derive(Debug, Clone, Default)]
+pub struct Prepared {
+    pub text: String,
+    pub unknown: Vec<String>,
+}
+
+fn prepare(text: &str, readings: &Readings) -> Prepared {
+    let converted = readings.apply(&clean::clean(text));
+    Prepared {
+        text: converted.text.trim().to_owned(),
+        unknown: converted.unknown,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SpeakOptions {
@@ -42,7 +75,7 @@ impl Speaker {
 
     /// 読み上げる文章にする（合成はしない）。
     pub fn prepare(&self, text: &str) -> Prepared {
-        mozu_text::prepare(text, &self.readings)
+        prepare(text, &self.readings)
     }
 
     /// 読み上げる。最後まで鳴らしたら `true`、`stop` で止めたら `false`。
@@ -105,7 +138,7 @@ impl Speaker {
         while let Some(chunk) = stream.next_samples()? {
             samples.extend(chunk);
         }
-        mozu_audio::wav::encode(&samples, stream.sample_rate)
+        mozu_audio::encode_wav(&samples, stream.sample_rate)
     }
 
     fn synthesize(&self, text: &str) -> anyhow::Result<SpeechStream> {
@@ -120,14 +153,33 @@ impl Speaker {
             );
         }
         let request = SpeechRequest {
-            speed: Some(self.options.speed),
+            input: prepared.text,
+            voice: self.options.voice.clone(),
+            speed: self.options.speed,
             seed: self.options.seed,
-            ..SpeechRequest::new(prepared.text, &self.options.voice)
         };
         let stream = self.client.speech(&request)?;
         if let Some(seed) = stream.seed {
             tracing::debug!("合成の種: {seed}（--seed で同じ読み方になる）");
         }
         Ok(stream)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn readings_template_is_valid() {
+        Readings::from_toml(READINGS_TEMPLATE).unwrap();
+    }
+
+    #[test]
+    fn prepare_cleans_and_converts() {
+        let readings = Readings::from_toml("github = \"ギットハブ\"").unwrap();
+        let prepared = prepare("## **GitHub** と Zebra\n", &readings);
+        assert_eq!(prepared.text, "ギットハブ と Zebra");
+        assert_eq!(prepared.unknown, ["Zebra"]);
     }
 }

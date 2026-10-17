@@ -75,7 +75,6 @@ impl App {
         let options = TranscribeOptions {
             language: Some(config.language.clone()),
             prompt: Some(config.prompt.clone()),
-            model: None,
         };
         let last_wav = config.keep_last_wav.then_some(last_wav);
         Self {
