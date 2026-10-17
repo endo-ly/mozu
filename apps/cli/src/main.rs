@@ -136,7 +136,7 @@ fn run(command: Command) -> anyhow::Result<()> {
                 speed: speed.unwrap_or(config.speech.speed),
                 seed,
             };
-            let speaker = Speaker::new(client, mozu_config::load_readings()?, options);
+            let speaker = Speaker::new(client, mozu_speak::load_readings()?, options);
             if show {
                 return show_prepared(&speaker, &text);
             }
@@ -239,7 +239,6 @@ fn transcribe_options(
     TranscribeOptions {
         language: Some(language.unwrap_or_else(|| config.dictation.language.clone())),
         prompt: Some(prompt.unwrap_or_else(|| config.dictation.prompt.clone())),
-        model: None,
     }
 }
 

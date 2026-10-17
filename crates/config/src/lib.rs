@@ -4,13 +4,12 @@
 //! - `%APPDATA%\mozu\readings.toml` — 読み方の辞書（英単語 → カタカナ）
 //! - mozu の `.env` — 環境ごとの値（speech.cpp の接続先 `MOZU_SPEECHCPP_URL`）
 //!
-//! どちらのファイルも、なければ説明付きのひな形を書き出す。
+//! `config.toml` は、なければ説明付きのひな形を書き出す（辞書の読み込みは `mozu-speak`）。
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Context;
-use mozu_text::Readings;
 use serde::Deserialize;
 
 /// 初回に書き出す設定ファイル。値は `Config::default()` と一致させる（テストで確認）。
@@ -78,9 +77,6 @@ paste_restore_delay_ms = 300
 # 直前の録音を %APPDATA%\mozu\dictation-last.wav に残す（調べもの用）
 keep_last_wav = false
 "#;
-
-/// 初回に %APPDATA%\mozu\readings.toml へコピーする、配布用の読み方の辞書（リポジトリ直下の readings.example.toml）。
-const READINGS_TEMPLATE: &str = include_str!("../../../readings.example.toml");
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -204,15 +200,8 @@ pub fn load() -> anyhow::Result<Config> {
         .with_context(|| format!("設定ファイルの書き方が違います: {}", path.display()))
 }
 
-/// 読み方の辞書を読む。なければ、配布用の例（`readings.example.toml`）をコピーして作る。
-pub fn load_readings() -> anyhow::Result<Readings> {
-    let path = readings_path()?;
-    let text = read_or_create(&path, READINGS_TEMPLATE)?;
-    Readings::from_toml(&text)
-        .with_context(|| format!("読み方の辞書の書き方が違います: {}", path.display()))
-}
-
-fn read_or_create(path: &Path, template: &str) -> anyhow::Result<String> {
+/// ファイルを読む。なければ `template` を書き出し、その中身を返す（あるファイルは書き換えない）。
+pub fn read_or_create(path: &Path, template: &str) -> anyhow::Result<String> {
     if !path.exists() {
         std::fs::write(path, template)
             .with_context(|| format!("{} を作れません", path.display()))?;
@@ -254,10 +243,5 @@ mod tests {
         assert_eq!(parsed.speech.voice, "musa");
         assert_eq!(parsed.speech.speed, SpeechConfig::default().speed);
         assert_eq!(parsed.dictation, DictationConfig::default());
-    }
-
-    #[test]
-    fn readings_template_is_valid() {
-        Readings::from_toml(READINGS_TEMPLATE).unwrap();
     }
 }

@@ -2,7 +2,6 @@
 members = [
   "crates/speechcpp-client",
   "crates/config",
-  "crates/text",
   "crates/audio",
   "crates/speak",
   "crates/server",
@@ -19,7 +18,6 @@ publish = false
 [workspace.dependencies]
 speechcpp-client = { path = "crates/speechcpp-client" }
 mozu-config = { path = "crates/config" }
-mozu-text = { path = "crates/text" }
 mozu-audio = { path = "crates/audio" }
 mozu-speak = { path = "crates/speak" }
 mozu-server = { path = "crates/server" }

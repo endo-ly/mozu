@@ -66,5 +66,5 @@ fn tones(notes: &[(f32, f32)]) -> Vec<u8> {
             (t * freq * std::f32::consts::TAU).sin() * envelope * GAIN
         }));
     }
-    mozu_audio::wav::encode(&samples, RATE).expect("メモリへの書き込み")
+    mozu_audio::encode_wav(&samples, RATE).expect("メモリへの書き込み")
 }

@@ -9,7 +9,6 @@ anyhow = { workspace = true }
 dotenvy = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
-mozu-text = { workspace = true }
 
 [lints]
 workspace = true

@@ -11,10 +11,9 @@ mozu/
 │  └─ cli/               # mozu.exe — コマンド
 ├─ crates/
 │  ├─ speechcpp-client/  # speech.cpp の HTTP API
-│  ├─ config/            # mozu-config — 設定・読み方の辞書・.env（tray と cli で共有）
-│  ├─ text/              # mozu-text — 読み上げ前の下ごしらえ（Markdown の除去・カタカナ化）
+│  ├─ config/            # mozu-config — 設定・.env・%APPDATA%\mozu の置き場（tray と cli で共有）
 │  ├─ audio/             # mozu-audio — 録音・再生（cpal）、WAV の書き出し
-│  ├─ speak/             # mozu-speak — 読み上げ（下ごしらえ → 合成 → 届いた分から再生）
+│  ├─ speak/             # mozu-speak — 読み上げ。下ごしらえ（Markdown の除去・カタカナ化）→ 合成 → 届いた分から再生
 │  └─ server/            # mozu-server — speech.cpp の探索・起動・停止（managed のときだけ）
 ├─ scripts/
 │  ├─ check.ps1          # 整形・clippy（警告はエラー）・テスト
@@ -46,7 +45,7 @@ cargo test -- --ignored    # speechcpp サービス・マイク・スピーカ�
 - キー入力・貼り付け・トレイは自動テストにできないので、動作に関わる変更のあとは `install.ps1` で入れ替えて手で確かめる
 - Rust 2024 edition。コメント・ログ・エラーメッセージは日本語
 
-## 読み上げ（mozu-speak / mozu-text）
+## 読み上げ（mozu-speak）
 
 - **英単語はすべてカタカナにしてから合成する**（Irodori-TTS は英語の読みが崩れる）。辞書は利用者の `readings.toml`（配布用の例は `readings.example.toml`）。読めない語は英語のまま残し、ログと `mozu say --show` で「辞書にない語」として出す
 - Markdown の記号・URL・コードの塊は読まない。行の区切りは残す（speech.cpp が改行を文の切れ目として扱う）

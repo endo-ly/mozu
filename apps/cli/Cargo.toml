@@ -15,7 +15,6 @@ mozu-audio = { workspace = true }
 mozu-config = { workspace = true }
 mozu-server = { workspace = true }
 mozu-speak = { workspace = true }
-mozu-text = { workspace = true }
 speechcpp-client = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

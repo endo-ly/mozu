@@ -85,7 +85,7 @@ fn run() -> anyhow::Result<()> {
     let client = Client::from_env(config.request_timeout());
     let speaker = Speaker::new(
         client.clone(),
-        mozu_config::load_readings()?,
+        mozu_speak::load_readings()?,
         SpeakOptions {
             voice: config.speech.voice.clone(),
             speed: config.speech.speed,

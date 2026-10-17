@@ -9,10 +9,10 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 /// 接続先の既定。
-pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8012";
+const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8012";
 
 /// 接続先を指定する環境変数（`.env` から読み込む想定）。
-pub const BASE_URL_ENV: &str = "MOZU_SPEECHCPP_URL";
+const BASE_URL_ENV: &str = "MOZU_SPEECHCPP_URL";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -36,8 +36,6 @@ pub struct TranscribeOptions {
     pub language: Option<String>,
     /// 固有名詞や表記のヒント。
     pub prompt: Option<String>,
-    /// 例: `Qwen3-ASR-1.7B`。`None` ならサーバーが載せている認識モデル。
-    pub model: Option<String>,
 }
 
 /// `POST /v1/audio/speech` の要求。
@@ -48,25 +46,11 @@ pub struct TranscribeOptions {
 pub struct SpeechRequest {
     pub input: String,
     pub voice: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub speed: Option<f32>,
+    /// 必ず送る（speech.cpp の既定 1 は遅い）。
+    pub speed: f32,
     /// `None` ならサーバーが選ぶ（選んだ値は `SpeechStream::seed`）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
-}
-
-impl SpeechRequest {
-    pub fn new(input: impl Into<String>, voice: impl Into<String>) -> Self {
-        Self {
-            input: input.into(),
-            voice: voice.into(),
-            model: None,
-            speed: None,
-            seed: None,
-        }
-    }
 }
 
 /// 合成した分から順に届く音声（16bit・リトルエンディアン・モノラルの PCM）。
@@ -171,11 +155,7 @@ impl Client {
     pub fn transcribe(&self, wav: &[u8], options: &TranscribeOptions) -> Result<String> {
         let mut form = Multipart::new();
         form.file("file", "audio.wav", "audio/wav", wav);
-        let fields = [
-            ("language", &options.language),
-            ("prompt", &options.prompt),
-            ("model", &options.model),
-        ];
+        let fields = [("language", &options.language), ("prompt", &options.prompt)];
         for (name, value) in fields {
             if let Some(value) = value.as_deref().filter(|v| !v.is_empty()) {
                 form.text(name, value);
@@ -399,8 +379,12 @@ mod tests {
     fn roundtrip_against_service() {
         let client = Client::new(DEFAULT_BASE_URL, Duration::from_secs(60));
         client.health().unwrap();
-        let mut request = SpeechRequest::new("今日はいい天気ですね。", "musa");
-        request.speed = Some(1.4);
+        let request = SpeechRequest {
+            input: "今日はいい天気ですね。".into(),
+            voice: "musa".into(),
+            speed: 1.4,
+            seed: None,
+        };
         let mut stream = client.speech(&request).unwrap();
         let mut samples = Vec::new();
         while let Some(chunk) = stream.next_samples().unwrap() {

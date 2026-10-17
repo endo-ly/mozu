@@ -49,7 +49,7 @@ pub struct Readings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Converted {
+pub(crate) struct Converted {
     pub text: String,
     /// 辞書になく、英語のまま残った語（重複なし、出てきた順）。
     pub unknown: Vec<String>,
@@ -57,7 +57,7 @@ pub struct Converted {
 
 impl Readings {
     /// 辞書（`見出し = "読み"` の TOML）から作る。
-    pub fn from_toml(toml_text: &str) -> Result<Self, toml::de::Error> {
+    pub(crate) fn from_toml(toml_text: &str) -> Result<Self, toml::de::Error> {
         let table: HashMap<String, String> = toml::from_str(toml_text)?;
         let mut words = HashMap::new();
         let mut phrases = Vec::new();
@@ -73,7 +73,7 @@ impl Readings {
         Ok(Self { words, phrases })
     }
 
-    pub fn apply(&self, text: &str) -> Converted {
+    pub(crate) fn apply(&self, text: &str) -> Converted {
         let text = self.replace_phrases(text);
         let mut out = String::with_capacity(text.len());
         let mut unknown: Vec<String> = Vec::new();
