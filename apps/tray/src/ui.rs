@@ -214,6 +214,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 1 => ServerState::Up,
                 2 => ServerState::Down,
                 3 => ServerState::Stopped,
+                4 => ServerState::Sleeping,
                 _ => ServerState::Checking,
             });
         }),

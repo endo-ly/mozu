@@ -69,7 +69,18 @@ pub fn run() -> bool {
         }
     };
 
-    let client = Client::from_env(config.request_timeout());
+    let url = match config.server.base_url() {
+        Ok(url) => url,
+        Err(e) => {
+            checks.push(Check::fail(
+                "接続先",
+                format!("{e:#}"),
+                "`mozu config` で server.url を直してください",
+            ));
+            return print(&checks);
+        }
+    };
+    let client = Client::new(url, config.request_timeout());
     let server_up = client.health().is_ok();
     checks.extend(check_server(&config, &client, server_up));
     if server_up {
@@ -78,11 +89,13 @@ pub fn run() -> bool {
     checks.push(check_device(
         "マイク",
         mozu_audio::list_inputs(),
+        &config.dictation.input_device,
         "Windows の設定でマイクを有効にし、`mozu devices` で名前を確かめる",
     ));
     checks.push(check_device(
         "スピーカー",
         mozu_audio::list_outputs(),
+        &config.speech.output_device,
         "Windows の設定で出力デバイスを確かめる",
     ));
     checks.push(check_ffmpeg());
@@ -167,7 +180,7 @@ fn check_server(config: &Config, client: &Client, server_up: bool) -> Vec<Check>
             Err(e) => checks.push(Check::fail(
                 "起動のしかた",
                 format!("{e:#}"),
-                "設定の [server] と .env の接続先を確かめてください",
+                "`mozu config` で [server] の設定を確かめてください",
             )),
         }
     }
@@ -197,9 +210,9 @@ fn check_models(config: &Config, client: &Client) -> Vec<Check> {
             .map(|m| m.id.as_str())
             .collect();
         checks.push(if names.is_empty() {
-            Check::fail(
+            Check::warn(
                 label,
-                "載っていません",
+                "載っていないため、この機能は使えません",
                 format!("`speech serve` に {example} を足してください（設定の [server] models）"),
             )
         } else {
@@ -227,15 +240,29 @@ fn check_models(config: &Config, client: &Client) -> Vec<Check> {
     checks
 }
 
-fn check_device(label: &'static str, list: anyhow::Result<Vec<String>>, hint: &str) -> Check {
+fn check_device(
+    label: &'static str,
+    list: anyhow::Result<Vec<String>>,
+    configured: &str,
+    hint: &str,
+) -> Check {
     match list {
         Ok(names) if !names.is_empty() => {
-            // 既定のものがあればそれを、なければ最初のものを見せる
-            let shown = names
-                .iter()
-                .find(|n| n.contains("(既定)"))
-                .unwrap_or(&names[0]);
-            Check::ok(label, shown.clone())
+            let shown = names.iter().find(|name| {
+                if configured.is_empty() {
+                    name.contains("(既定)")
+                } else {
+                    name.to_lowercase().contains(&configured.to_lowercase())
+                }
+            });
+            match shown {
+                Some(name) => Check::ok(label, name.clone()),
+                None => Check::fail(
+                    label,
+                    format!("指定したデバイスがありません（空は既定）: {configured}"),
+                    hint,
+                ),
+            }
         }
         Ok(_) => Check::fail(label, "見つかりません", hint),
         Err(e) => Check::fail(label, format!("{e:#}"), hint),

@@ -32,6 +32,26 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// 設定ファイルを開く（壊れた設定も編集できる）
+    Config {
+        /// 開かずに設定ファイルの場所を表示する
+        #[arg(long)]
+        path: bool,
+    },
+    /// セットアップで選んだモデルを保存する
+    #[command(hide = true)]
+    ConfigureModels {
+        #[arg(long, required = true, num_args = 1..)]
+        models: Vec<String>,
+        #[arg(long)]
+        managed: bool,
+        #[arg(long)]
+        model_dir: PathBuf,
+        #[arg(long)]
+        exe: PathBuf,
+        #[arg(long, num_args = 1..)]
+        languages: Vec<String>,
+    },
     /// 文章を読み上げる（-o でファイルに保存）
     Say {
         /// 読み上げる文章。省略するか "-" なら標準入力から読む
@@ -107,8 +127,17 @@ fn main() -> ExitCode {
 }
 
 fn run(command: Command) -> anyhow::Result<()> {
-    if let Err(e) = mozu_config::load_dotenv() {
-        tracing::warn!(".env を読めません: {e:#}");
+    if let Command::Config { path } = command {
+        let file = mozu_config::ensure_config()?;
+        if path {
+            println!("{}", file.display());
+        } else {
+            std::process::Command::new("notepad.exe")
+                .arg(&file)
+                .spawn()
+                .context("設定ファイルを開けません")?;
+        }
+        return Ok(());
     }
     // 診断は、設定が壊れていても動く（壊れていること自体を知らせる）
     if matches!(command, Command::Doctor) {
@@ -118,8 +147,33 @@ fn run(command: Command) -> anyhow::Result<()> {
             Err(anyhow::anyhow!("直すべき項目があります"))
         };
     }
+    if let Command::ConfigureModels {
+        models,
+        managed,
+        model_dir,
+        exe,
+        languages,
+    } = command
+    {
+        return mozu_config::save_models(&models, managed, &model_dir, &exe, &languages);
+    }
     let config = mozu_config::load()?;
-    let client = Client::from_env(config.request_timeout());
+    let client = Client::new(config.server.base_url()?, config.request_timeout());
+    // 診断や --show は利用に数えず、実際にエンジンを使うコマンドだけ起動を待つ。
+    let uses_engine = matches!(
+        &command,
+        Command::Say { show: false, .. }
+            | Command::Transcribe { .. }
+            | Command::Listen { .. }
+            | Command::Voices
+    );
+    let usage = (config.server.managed && uses_engine)
+        .then(|| mozu_server::UsageSession::new(client.base_url(), config.request_timeout()))
+        .transpose()?;
+    let _usage_guard = usage.as_ref().map(|usage| usage.begin()).transpose()?;
+    if let Some(usage) = &usage {
+        usage.wait_ready(&AtomicBool::new(false), || client.health().is_ok())?;
+    }
 
     match command {
         Command::Say {
@@ -136,7 +190,20 @@ fn run(command: Command) -> anyhow::Result<()> {
                 speed: speed.unwrap_or(config.speech.speed),
                 seed,
             };
-            let speaker = Speaker::new(client, mozu_speak::load_readings()?, options);
+            mozu_config::validate_speed(options.speed)?;
+            anyhow::ensure!(
+                !options.voice.trim().is_empty(),
+                "--voice を指定してください（指定なしは none）"
+            );
+            anyhow::ensure!(
+                options.seed.is_none_or(|seed| seed <= 9007199254740991),
+                "--seed は 0〜9007199254740991 にしてください"
+            );
+            let speaker = Speaker::new(
+                client,
+                mozu_speak::parse_readings(&mozu_config::readings_text()?)?,
+                options,
+            );
             if show {
                 return show_prepared(&speaker, &text);
             }
@@ -166,6 +233,14 @@ fn run(command: Command) -> anyhow::Result<()> {
             silence_ms,
             max_secs,
         } => {
+            anyhow::ensure!(
+                (1..=1800).contains(&max_secs),
+                "--max-secs は 1〜1800 にしてください"
+            );
+            anyhow::ensure!(
+                (1..=60000).contains(&silence_ms),
+                "--silence-ms は 1〜60000 にしてください"
+            );
             let wav = listen(&config, Duration::from_millis(silence_ms), max_secs)?;
             let options = transcribe_options(&config, None, None);
             println!("{}", client.transcribe(&wav, &options)?.trim());
@@ -197,6 +272,8 @@ fn run(command: Command) -> anyhow::Result<()> {
             println!("OK ({})", client.base_url());
         }
         Command::Doctor => unreachable!("上で処理済み"),
+        Command::Config { .. } => unreachable!("上で処理済み"),
+        Command::ConfigureModels { .. } => unreachable!("上で処理済み"),
     }
     Ok(())
 }

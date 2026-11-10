@@ -17,6 +17,7 @@ pub struct Reader {
     output_device: String,
     ui: UiHandle,
     running: Option<Running>,
+    usage: Option<mozu_server::UsageSession>,
 }
 
 struct Running {
@@ -25,36 +26,46 @@ struct Running {
 }
 
 impl Reader {
-    pub fn new(speaker: Speaker, output_device: String, ui: UiHandle) -> Self {
+    pub fn new(
+        speaker: Speaker,
+        output_device: String,
+        ui: UiHandle,
+        usage: Option<mozu_server::UsageSession>,
+    ) -> Self {
         Self {
             speaker,
             output_device,
             ui,
             running: None,
+            usage,
         }
     }
 
     /// 読み上げ中なら止め、そうでなければ選択中の文を読み上げる。
     pub fn toggle(&mut self) {
-        if let Some(running) = self.running.take_if(|r| !r.thread.is_finished()) {
+        if let Some(running) = self.running.as_ref().filter(|r| !r.thread.is_finished()) {
             running.stop.store(true, Ordering::Relaxed);
             tracing::info!("読み上げを止めました");
             return;
         }
 
+        if let Some(running) = self.running.take() {
+            let _ = running.thread.join();
+        }
         let stop = Arc::new(AtomicBool::new(false));
         // 辞書を足したらすぐ効くよう、読み上げるたびに読み直す（読めなければ前の辞書のまま）
-        let mut speaker = self.speaker.clone();
-        match mozu_speak::load_readings() {
-            Ok(readings) => speaker.set_readings(readings),
+        match mozu_config::readings_text().and_then(|text| mozu_speak::parse_readings(&text)) {
+            Ok(readings) => self.speaker.set_readings(readings),
             Err(e) => tracing::warn!("{e:#}。前の辞書で読み上げます"),
         }
+        let speaker = self.speaker.clone();
         let output_device = self.output_device.clone();
         let ui = self.ui;
         let stop_flag = Arc::clone(&stop);
+        let usage = self.usage.clone();
         let thread = std::thread::spawn(move || {
             ui.speaking(true);
-            if let Err(e) = read_selection(&speaker, &output_device, &stop_flag) {
+            if let Err(e) = read_selection(&speaker, &output_device, &stop_flag, usage) {
                 sound::play(Cue::Error);
                 tracing::error!("{e:#}");
             }
@@ -64,10 +75,27 @@ impl Reader {
     }
 }
 
-fn read_selection(speaker: &Speaker, output_device: &str, stop: &AtomicBool) -> anyhow::Result<()> {
+fn read_selection(
+    speaker: &Speaker,
+    output_device: &str,
+    stop: &AtomicBool,
+    usage: Option<mozu_server::UsageSession>,
+) -> anyhow::Result<()> {
+    let _guard = usage.as_ref().map(|usage| usage.begin()).transpose()?;
+    if stop.load(Ordering::Relaxed) {
+        return Ok(());
+    }
     let Some(text) = insert::copy_selection()? else {
         anyhow::bail!("選択されている文がありません");
     };
+    if stop.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+    if let Some(usage) = usage
+        && !usage.wait_ready(stop, || speaker.healthy())?
+    {
+        return Ok(());
+    }
     tracing::info!("読み上げ開始 ({} 文字)", text.chars().count());
     tracing::debug!("読み上げる文: {text}");
     let player = Player::open(output_device).context("スピーカーを開けません")?;
@@ -75,4 +103,12 @@ fn read_selection(speaker: &Speaker, output_device: &str, stop: &AtomicBool) -> 
         tracing::info!("読み上げ終了");
     }
     Ok(())
+}
+
+impl Drop for Reader {
+    fn drop(&mut self) {
+        if let Some(running) = &self.running {
+            running.stop.store(true, Ordering::Relaxed);
+        }
+    }
 }

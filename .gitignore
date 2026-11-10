@@ -1,3 +1,7 @@
 /target
 /bin
 .env
+/dist
+/AGENTS.local.md
+/scripts/add-voice.ps1
+/docs/voices.md

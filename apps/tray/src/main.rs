@@ -58,12 +58,6 @@ fn run() -> anyhow::Result<()> {
     let _log_guard = init_logging(&logs)?;
     tracing::info!("起動しました ({})", std::env::current_exe()?.display());
 
-    match mozu_config::load_dotenv() {
-        Ok(Some(path)) => tracing::info!(".env: {}", path.display()),
-        Ok(None) => tracing::info!(".env がないので既定の接続先を使います"),
-        Err(e) => tracing::warn!(".env を読めません: {e:#}"),
-    }
-
     let config = mozu_config::load()?;
     let paths = tray::Paths {
         config: mozu_config::config_path()?,
@@ -82,10 +76,16 @@ fn run() -> anyhow::Result<()> {
     }
     sound::init(config.sounds);
 
-    let client = Client::from_env(config.request_timeout());
+    let client = Client::new(config.server.base_url()?, config.request_timeout());
+    let usage = config
+        .server
+        .managed
+        .then(|| mozu_server::UsageSession::new(client.base_url(), config.request_timeout()))
+        .transpose()?;
+    let idle_timeout = std::time::Duration::from_secs(config.server.idle_timeout_secs);
     let speaker = Speaker::new(
         client.clone(),
-        mozu_speak::load_readings()?,
+        mozu_speak::parse_readings(&mozu_config::readings_text()?)?,
         SpeakOptions {
             voice: config.speech.voice.clone(),
             speed: config.speech.speed,
@@ -97,7 +97,12 @@ fn run() -> anyhow::Result<()> {
     let tray = tray::Tray::new(paths, config.server.managed)?;
 
     let (tx, rx) = mpsc::channel();
-    let reader = reader::Reader::new(speaker, config.speech.output_device.clone(), ui);
+    let reader = reader::Reader::new(
+        speaker,
+        config.speech.output_device.clone(),
+        ui,
+        usage.clone(),
+    );
     let app = app::App::new(
         config.dictation,
         client.clone(),
@@ -105,7 +110,8 @@ fn run() -> anyhow::Result<()> {
         tx.clone(),
         ui,
         reader,
-    );
+    )
+    .with_usage(usage.clone());
     let (control_tx, control_rx) = mpsc::channel();
     let spec = if config.server.managed {
         match Spec::new(&config.server, client.base_url()) {
@@ -120,7 +126,7 @@ fn run() -> anyhow::Result<()> {
     } else {
         None
     };
-    server_watch::spawn(client, ui, spec, control_rx);
+    server_watch::spawn(client, ui, spec, control_rx, usage, idle_timeout);
     spawn_quit_watch(ui)?;
     std::thread::spawn(move || app.run(rx));
 

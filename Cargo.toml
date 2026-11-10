@@ -14,6 +14,8 @@ resolver = "3"
 edition = "2024"
 version = "0.1.0"
 publish = false
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 speechcpp-client = { path = "crates/speechcpp-client" }
@@ -22,7 +24,6 @@ mozu-audio = { path = "crates/audio" }
 mozu-speak = { path = "crates/speak" }
 mozu-server = { path = "crates/server" }
 anyhow = "1.0.104"
-dotenvy = "0.15.7"
 arboard = { version = "3.6.1", default-features = false }
 clap = { version = "4.6.7", features = ["derive"] }
 cpal = "0.18.2"
@@ -37,6 +38,10 @@ tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 ureq = { version = "3.4.2", default-features = false }
+reqwest = { version = "0.13.5", default-features = false }
+tokio = { version = "1.48", features = ["rt", "time", "net", "macros"] }
+url = "2.5"
+toml_edit = "0.25"
 windows = "0.62.2"
 
 [workspace.lints.rust]

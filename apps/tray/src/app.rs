@@ -35,6 +35,7 @@ pub enum Event {
 enum State {
     Idle,
     Recording {
+        usage: Option<mozu_server::UsageGuard>,
         recorder: Recorder,
         started: Instant,
         target: Target,
@@ -61,6 +62,7 @@ pub struct App {
     events: Sender<Event>,
     ui: UiHandle,
     reader: Reader,
+    usage: Option<mozu_server::UsageSession>,
 }
 
 impl App {
@@ -85,7 +87,13 @@ impl App {
             events,
             ui,
             reader,
+            usage: None,
         }
+    }
+
+    pub fn with_usage(mut self, usage: Option<mozu_server::UsageSession>) -> Self {
+        self.usage = usage;
+        self
     }
 
     pub fn run(mut self, events: Receiver<Event>) {
@@ -131,11 +139,20 @@ impl App {
     fn step(&mut self, state: State, event: Event) -> State {
         match (state, event) {
             (State::Idle, Event::HotkeyPressed) => {
+                let usage = match self.usage.as_ref().map(|usage| usage.begin()).transpose() {
+                    Ok(usage) => usage,
+                    Err(e) => {
+                        sound::play(Cue::Error);
+                        tracing::error!("{e:#}");
+                        return State::Idle;
+                    }
+                };
                 let target = Target::foreground();
                 match Recorder::start(&self.config.input_device, self.config.max_record_secs) {
                     Ok(recorder) => {
                         tracing::info!("録音開始");
                         State::Recording {
+                            usage,
                             recorder,
                             started: Instant::now(),
                             target,
@@ -151,6 +168,7 @@ impl App {
             }
             (
                 State::Recording {
+                    usage,
                     recorder,
                     started,
                     target,
@@ -172,7 +190,7 @@ impl App {
                         self.config.max_record_secs
                     );
                 }
-                self.spawn_transcription(recording, target);
+                self.spawn_transcription(recording, target, usage);
                 State::Busy
             }
             (State::Recording { recorder, .. }, Event::HotkeyCancelled) => {
@@ -201,14 +219,26 @@ impl App {
     }
 
     /// 認識と貼り付けは別スレッドで行い、終わったら `Event::Done` を送る。
-    fn spawn_transcription(&self, recording: Recording, target: Target) {
+    fn spawn_transcription(
+        &self,
+        recording: Recording,
+        target: Target,
+        usage_guard: Option<mozu_server::UsageGuard>,
+    ) {
+        let usage = self.usage.clone();
         let client = self.client.clone();
         let options = self.options.clone();
         let last_wav = self.last_wav.clone();
         let restore_delay = Duration::from_millis(self.config.paste_restore_delay_ms);
         let events = self.events.clone();
         std::thread::spawn(move || {
+            let _usage_guard = usage_guard;
             let result = (|| -> anyhow::Result<()> {
+                if let Some(usage) = usage {
+                    usage.wait_ready(&std::sync::atomic::AtomicBool::new(false), || {
+                        client.health().is_ok()
+                    })?;
+                }
                 let wav = recording.to_wav()?;
                 drop(recording);
                 if let Some(path) = &last_wav

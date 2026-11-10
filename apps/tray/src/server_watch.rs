@@ -7,7 +7,7 @@
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use mozu_server::{Managed, Spec};
+use mozu_server::{IdleTimer, Managed, Spec, UsageSession};
 use speechcpp_client::Client;
 
 use crate::tray::ServerState;
@@ -37,8 +37,23 @@ pub enum Control {
 
 /// 見張りのスレッドを起動する。`spec` があるとき（managed）だけ speech.cpp を起動する。
 /// 送り手が消えたら（トレイが終わったら）戻り、`Managed` を捨てて speech.cpp も止める。
-pub fn spawn(client: Client, ui: UiHandle, spec: Option<Spec>, control: mpsc::Receiver<Control>) {
+pub fn spawn(
+    client: Client,
+    ui: UiHandle,
+    spec: Option<Spec>,
+    control: mpsc::Receiver<Control>,
+    usage: Option<UsageSession>,
+    idle_timeout: Duration,
+) {
     std::thread::spawn(move || {
+        if let Some(usage) = &usage
+            && let Err(e) = usage.set_paused(false)
+        {
+            tracing::error!("{e:#}");
+            return;
+        }
+        let mut timer = IdleTimer::new(idle_timeout);
+        let mut sleeping = false;
         let mut managed: Option<Managed> = None;
         // いちばん最近 speech.cpp を起動した時刻（終了が「短時間だったか」の判定用）
         let mut started_at: Option<Instant> = None;
@@ -47,6 +62,8 @@ pub fn spawn(client: Client, ui: UiHandle, spec: Option<Spec>, control: mpsc::Re
         let mut next_try = Instant::now();
         let mut notified = false;
         let mut last: Option<ServerState> = None;
+        let mut next_health = Instant::now();
+        let mut healthy = false;
         loop {
             if stopped {
                 report(&ui, &mut last, ServerState::Stopped);
@@ -55,6 +72,12 @@ pub fn spawn(client: Client, ui: UiHandle, spec: Option<Spec>, control: mpsc::Re
                     Ok(Control::Start) => {
                         tracing::info!("speech.cpp を起動します");
                         stopped = false;
+                        sleeping = false;
+                        next_health = Instant::now();
+                        timer.reset();
+                        if let Some(usage) = &usage {
+                            let _ = usage.set_paused(false);
+                        }
                         failures = 0;
                         notified = false;
                         next_try = Instant::now();
@@ -66,7 +89,59 @@ pub fn spawn(client: Client, ui: UiHandle, spec: Option<Spec>, control: mpsc::Re
                 continue;
             }
 
-            let mut health = client.health();
+            if let Some(usage) = &usage {
+                let observation = usage.inspect(|active, completed| {
+                    if timer.expired(active, completed, Instant::now()) && managed.is_some() {
+                        managed = None;
+                        sleeping = true;
+                        tracing::info!(
+                            "未使用が {} 秒続いたので speech.cpp を停止しました",
+                            idle_timeout.as_secs()
+                        );
+                    }
+                    if sleeping && active {
+                        sleeping = false;
+                        next_health = Instant::now();
+                        failures = 0;
+                        next_try = Instant::now();
+                        timer.reset();
+                        tracing::info!("利用のため speech.cpp を再開します");
+                    }
+                });
+                if let Err(e) = observation {
+                    tracing::warn!("{e:#}");
+                }
+            }
+            if sleeping {
+                report(&ui, &mut last, ServerState::Sleeping);
+                match control.recv_timeout(Duration::from_secs(1)) {
+                    Ok(Control::Start) => {
+                        sleeping = false;
+                        next_health = Instant::now();
+                        timer.reset();
+                        next_try = Instant::now();
+                    }
+                    Ok(Control::Stop) => {
+                        stopped = true;
+                        if let Some(usage) = &usage {
+                            let _ = usage.set_paused(true);
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                }
+                continue;
+            }
+            let mut health = if Instant::now() >= next_health {
+                next_health = Instant::now() + HEALTH_INTERVAL;
+                client.health()
+            } else if healthy {
+                Ok(())
+            } else {
+                Err(speechcpp_client::Error::Decode(
+                    "speech.cpp は起動待ちです".into(),
+                ))
+            };
             if health.is_err()
                 && let Some(spec) = &spec
             {
@@ -81,11 +156,15 @@ pub fn spawn(client: Client, ui: UiHandle, spec: Option<Spec>, control: mpsc::Re
                     match Managed::start(spec) {
                         Ok(child) => {
                             started_at = Some(Instant::now());
+                            timer.reset();
                             match wait_until_ready(&client, managed.insert(child), &control) {
                                 Wait::Ready(result) => health = result,
                                 // 待っている間に「止める」が来た。managed を捨てて止める
                                 Wait::Stopped => {
                                     stopped = true;
+                                    if let Some(usage) = &usage {
+                                        let _ = usage.set_paused(true);
+                                    }
                                     managed = None;
                                     continue;
                                 }
@@ -105,6 +184,7 @@ pub fn spawn(client: Client, ui: UiHandle, spec: Option<Spec>, control: mpsc::Re
                     }
                 }
             }
+            healthy = health.is_ok();
             if health.is_ok() {
                 failures = 0;
                 notified = false;
@@ -123,12 +203,22 @@ pub fn spawn(client: Client, ui: UiHandle, spec: Option<Spec>, control: mpsc::Re
             report(&ui, &mut last, state);
 
             // 待つ。メニューからの合図が来たら、確認の間隔を待たずに反応する
-            match control.recv_timeout(HEALTH_INTERVAL) {
+            match control.recv_timeout(if usage.is_some() {
+                Duration::from_secs(1)
+            } else {
+                HEALTH_INTERVAL
+            }) {
                 Ok(Control::Stop) => {
                     stopped = true;
+                    if let Some(usage) = &usage {
+                        let _ = usage.set_paused(true);
+                    }
                     managed = None;
                 }
-                Ok(Control::Start) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Ok(Control::Start) => {
+                    timer.reset();
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
             }
         }

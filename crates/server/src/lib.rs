@@ -20,6 +20,9 @@ use windows::Win32::System::JobObjects::{
 };
 use windows::core::PCWSTR;
 
+mod usage;
+pub use usage::{IdleTimer, UsageGuard, UsageSession};
+
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// mozu が speech.cpp を入れる場所（`scripts\setup-speech.ps1` と同じ）。`%APPDATA%\mozu\speech`
@@ -74,7 +77,7 @@ pub struct Spec {
 }
 
 impl Spec {
-    /// 設定と接続先（`MOZU_SPEECHCPP_URL`）から、起動のしかたを決める。
+    /// 設定と接続先（`server.url`）から、起動のしかたを決める。
     pub fn new(config: &ServerConfig, base_url: &str) -> anyhow::Result<Self> {
         let exe = find_exe(&config.exe).ok_or_else(|| {
             anyhow!(
@@ -82,6 +85,7 @@ impl Spec {
                  設定の [server] exe に場所を書いてください"
             )
         })?;
+        validate_device(&exe, &config.device)?;
         let voices_dir = if config.voices_dir.is_empty() {
             default_voices_dir()?
         } else {
@@ -138,6 +142,27 @@ impl Spec {
             log,
         })
     }
+}
+
+/// 固定の別名か、実機の devices に出る名前だけを受け付ける。サーバーは起動しない。
+fn validate_device(exe: &Path, device: &str) -> anyhow::Result<()> {
+    if matches!(device, "auto" | "gpu" | "cpu") {
+        return Ok(());
+    }
+    let output = Command::new(exe)
+        .args(["devices", "--json"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()?;
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .context("speech devices --json の結果を読めません")?;
+    anyhow::ensure!(
+        output.status.success()
+            && value["devices"].as_array().is_some_and(|items| items
+                .iter()
+                .any(|item| item["name"].as_str() == Some(device))),
+        "server.device に対応するデバイスがありません: {device}"
+    );
+    Ok(())
 }
 
 /// 接続先の URL から、起動するときの host と port を取り出す。自分の PC のアドレスだけ許す

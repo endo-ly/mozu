@@ -4,15 +4,10 @@
 //! サーバーの起動・停止はしない（managed のときは `mozu-server` が行う）。
 
 use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-
-/// 接続先の既定。
-const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8012";
-
-/// 接続先を指定する環境変数（`.env` から読み込む想定）。
-const BASE_URL_ENV: &str = "MOZU_SPEECHCPP_URL";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -25,6 +20,10 @@ pub enum Error {
     /// 応答の形が想定と違う。
     #[error("speech.cpp の応答を読めません: {0}")]
     Decode(String),
+    #[error("speech.cpp の通信に失敗しました: {0}")]
+    Streaming(#[from] reqwest::Error),
+    #[error("通信の実行環境を作れません: {0}")]
+    Runtime(#[from] std::io::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -131,22 +130,96 @@ impl Client {
         }
     }
 
-    /// 接続先を環境変数 `MOZU_SPEECHCPP_URL` にして作る。なければ（空なら）既定の接続先。
-    pub fn from_env(timeout: Duration) -> Self {
-        let base_url = std::env::var(BASE_URL_ENV)
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_BASE_URL.to_owned());
-        Self::new(base_url, timeout)
-    }
-
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
 
+    /// 応答待ちと受信待ちを含めて中断できる合成。中断すると接続を閉じる。
+    pub fn speech_cancellable(
+        &self,
+        request: &SpeechRequest,
+        stop: &AtomicBool,
+        mut on_samples: impl FnMut(&[f32], u32),
+    ) -> Result<bool> {
+        if stop.load(Ordering::Relaxed) {
+            return Ok(false);
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            let transfer = async {
+                let client = reqwest::Client::builder()
+                    .pool_max_idle_per_host(0)
+                    .redirect(reqwest::redirect::Policy::none())
+                    .connect_timeout(self.timeout)
+                    .read_timeout(self.timeout)
+                    .build()?;
+                let mut body =
+                    serde_json::to_value(request).map_err(|e| Error::Decode(e.to_string()))?;
+                body["response_format"] = "pcm".into();
+                let json = serde_json::to_vec(&body).map_err(|e| Error::Decode(e.to_string()))?;
+                let mut response = client
+                    .post(format!("{}/v1/audio/speech", self.base_url))
+                    .header("Content-Type", "application/json")
+                    .body(json)
+                    .send()
+                    .await?;
+                if !response.status().is_success() {
+                    let status = response.status().as_u16();
+                    let message = response.text().await?;
+                    return Err(Error::Api { status, message });
+                }
+                let rate = response
+                    .headers()
+                    .get("X-Sample-Rate")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .filter(|v| (8000..=192000).contains(v))
+                    .ok_or_else(|| Error::Decode("X-Sample-Rate が不正です".into()))?;
+                let mut odd = None;
+                while let Some(chunk) = response.chunk().await? {
+                    let mut bytes = Vec::with_capacity(chunk.len() + 1);
+                    bytes.extend(odd.take());
+                    bytes.extend_from_slice(&chunk);
+                    if bytes.len() % 2 == 1 {
+                        odd = bytes.pop();
+                    }
+                    let samples: Vec<f32> = bytes
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|&b| i16::from_le_bytes(b) as f32 / 32768.0)
+                        .collect();
+                    on_samples(&samples, rate);
+                }
+                if odd.is_some() {
+                    return Err(Error::Decode("PCM がサンプルの途中で終わりました".into()));
+                }
+                Ok(true)
+            };
+            let cancelled = async {
+                while !stop.load(Ordering::Relaxed) {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            };
+            tokio::select! {
+                biased;
+                _ = cancelled => Ok(false),
+                result = transfer => result,
+            }
+        })
+    }
+
     /// `GET /health` が 200 を返すか確かめる。
     pub fn health(&self) -> Result<()> {
-        let mut res = self.agent.get(format!("{}/health", self.base_url)).call()?;
+        let mut res = self
+            .agent
+            .get(format!("{}/health", self.base_url))
+            .config()
+            .timeout_global(Some(self.timeout.min(Duration::from_secs(3))))
+            .build()
+            .call()?;
         check_status(&mut res)?;
         Ok(())
     }
@@ -242,6 +315,7 @@ impl Client {
             .config()
             .timeout_global(None)
             .timeout_recv_response(Some(self.timeout))
+            .timeout_recv_body(Some(self.timeout))
             .build()
             .header("Content-Type", "application/json")
             .send(&json[..])?;
@@ -254,6 +328,7 @@ impl Client {
         };
         let sample_rate = header("X-Sample-Rate")
             .and_then(|r| u32::try_from(r).ok())
+            .filter(|r| (8000..=192000).contains(r))
             .ok_or_else(|| Error::Decode("X-Sample-Rate がありません".into()))?;
         let seed = header("X-Speech-Seed");
         Ok(SpeechStream {
@@ -352,6 +427,75 @@ impl Multipart {
 mod tests {
     use super::*;
 
+    /// ヘッダー待ち・本文待ちの両方で、停止後に相手へ切断が届くことを確かめる。
+    #[test]
+    fn cancellation_closes_stalled_connection() {
+        use std::io::Write;
+        use std::net::TcpListener;
+        use std::sync::{Arc, mpsc};
+        for headers in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let (ready_tx, ready_rx) = mpsc::channel();
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    socket.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                let length: usize = String::from_utf8(request)
+                    .unwrap()
+                    .lines()
+                    .find_map(|line| {
+                        line.to_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|s| s.trim().parse().unwrap())
+                    })
+                    .unwrap();
+                socket.read_exact(&mut vec![0; length]).unwrap();
+                if headers {
+                    socket.write_all(b"HTTP/1.1 200 OK\r\nX-Sample-Rate: 24000\r\nContent-Length: 100000\r\n\r\n").unwrap();
+                }
+                ready_tx.send(()).unwrap();
+                // 切断まで待つ。タイムアウトなら、停止で接続が閉じていない。
+                let closed = socket.read(&mut [0]);
+                assert!(
+                    matches!(closed, Ok(0))
+                        || closed.is_err_and(|e| matches!(
+                            e.kind(),
+                            std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::ConnectionAborted
+                        ))
+                );
+            });
+            let stop = Arc::new(AtomicBool::new(false));
+            let flag = Arc::clone(&stop);
+            let cancel = std::thread::spawn(move || {
+                ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+                flag.store(true, Ordering::Relaxed);
+            });
+            let client = Client::new(format!("http://{address}"), Duration::from_secs(30));
+            let request = SpeechRequest {
+                input: "確認".into(),
+                voice: "none".into(),
+                speed: 1.4,
+                seed: None,
+            };
+            assert!(
+                !client
+                    .speech_cancellable(&request, &stop, |_, _| {})
+                    .unwrap()
+            );
+            cancel.join().unwrap();
+            server.join().unwrap();
+        }
+    }
+
     #[test]
     fn multipart_layout() {
         let mut form = Multipart::new();
@@ -377,7 +521,7 @@ mod tests {
     #[test]
     #[ignore = "speechcpp サービスが必要"]
     fn roundtrip_against_service() {
-        let client = Client::new(DEFAULT_BASE_URL, Duration::from_secs(60));
+        let client = Client::new("http://127.0.0.1:8012", Duration::from_secs(60));
         client.health().unwrap();
         let request = SpeechRequest {
             input: "今日はいい天気ですね。".into(),

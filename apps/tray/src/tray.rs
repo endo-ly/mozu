@@ -32,6 +32,8 @@ pub enum ServerState {
     Down = 2,
     /// managed の speech.cpp を、トレイのメニューで止めている。
     Stopped = 3,
+    /// 未使用のため停止。次の利用で再開する。
+    Sleeping = 4,
 }
 
 /// メニューで選ばれた操作。
@@ -139,7 +141,7 @@ impl Tray {
             self.server = state;
             match (&self.server_toggle, state) {
                 (Some(item), ServerState::Checking) => item.set_enabled(false),
-                (Some(item), ServerState::Stopped) => {
+                (Some(item), ServerState::Stopped | ServerState::Sleeping) => {
                     item.set_text("speech.cpp を起動する");
                     item.set_enabled(true);
                 }
@@ -170,11 +172,13 @@ impl Tray {
             .is_some_and(|item| id == item.id())
         {
             // 止まっているときは「起動する」、それ以外は「止める」
-            Some(if self.server == ServerState::Stopped {
-                Action::StartServer
-            } else {
-                Action::StopServer
-            })
+            Some(
+                if matches!(self.server, ServerState::Stopped | ServerState::Sleeping) {
+                    Action::StartServer
+                } else {
+                    Action::StopServer
+                },
+            )
         } else if id == self.quit.id() {
             Some(Action::Quit)
         } else {
@@ -199,6 +203,7 @@ impl Tray {
             ServerState::Up => "speech.cpp 接続中",
             ServerState::Down => "speech.cpp につながらない",
             ServerState::Stopped => "speech.cpp を止めています",
+            ServerState::Sleeping => "speech.cpp は待機中（使用時に起動）",
         };
         let text = format!("{activity}（{server}）");
         self.status.set_text(&text);
@@ -206,7 +211,7 @@ impl Tray {
         let reachable = match self.server {
             ServerState::Up => Some(true),
             ServerState::Checking => None,
-            ServerState::Down | ServerState::Stopped => Some(false),
+            ServerState::Down | ServerState::Stopped | ServerState::Sleeping => Some(false),
         };
         match icon(self.activity, self.speaking, reachable) {
             Ok(icon) => {
